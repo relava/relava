@@ -24,7 +24,7 @@ Three approaches were evaluated:
 2. **API-First with Partners** -- Partner with services that have public APIs. Rejected: most consumer services lack booking APIs (Airbnb shut theirs down in 2018), B2B API access requires the same business development the pivot was designed to avoid.
 3. **Consent Layer + Virtual Cards (selected)** -- Relava handles only consent and payment. Agent frameworks handle browsing. Fastest to ship, smallest scope, works with any agent framework.
 
-Full analysis: `agent-first-pivot-analysis-2026-03-23.md`
+Full analysis: `docs/decisions/agent-first-pivot-analysis-2026-03-23.md`
 
 ### Wedge Statement
 
