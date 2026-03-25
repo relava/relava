@@ -69,12 +69,7 @@ impl RelavaDir {
 
     /// Path to a specific resource version directory,
     /// e.g. `store/skills/denden/1.0.0/`.
-    pub fn version_dir(
-        &self,
-        resource_type: ResourceType,
-        name: &str,
-        version: &str,
-    ) -> PathBuf {
+    pub fn version_dir(&self, resource_type: ResourceType, name: &str, version: &str) -> PathBuf {
         self.type_dir(resource_type).join(name).join(version)
     }
 
@@ -98,11 +93,7 @@ mod tests {
     fn test_root() -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "relava-dir-test-{}-{}",
-            std::process::id(),
-            id
-        ))
+        std::env::temp_dir().join(format!("relava-dir-test-{}-{}", std::process::id(), id))
     }
 
     #[test]
@@ -116,10 +107,7 @@ mod tests {
         assert_eq!(rd.store_dir(), root.join("store"));
         assert_eq!(rd.cache_dir(), root.join("cache"));
         assert_eq!(rd.logs_dir(), root.join("logs"));
-        assert_eq!(
-            rd.type_dir(ResourceType::Skill),
-            root.join("store/skills")
-        );
+        assert_eq!(rd.type_dir(ResourceType::Skill), root.join("store/skills"));
         assert_eq!(
             rd.version_dir(ResourceType::Skill, "denden", "1.0.0"),
             root.join("store/skills/denden/1.0.0")

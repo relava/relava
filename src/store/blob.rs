@@ -33,9 +33,7 @@ impl BlobStore for LocalBlobStore {
     fn fetch(&self, path: &str) -> Result<Vec<u8>, StoreError> {
         let full = self.resolve(path);
         std::fs::read(&full).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                StoreError::NotFound(format!("blob not found: {path}"))
-            }
+            std::io::ErrorKind::NotFound => StoreError::NotFound(format!("blob not found: {path}")),
             _ => StoreError::Io(e),
         })
     }
@@ -63,11 +61,8 @@ mod tests {
     fn test_store() -> (PathBuf, LocalBlobStore) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "relava-blob-test-{}-{}",
-            std::process::id(),
-            id
-        ));
+        let root =
+            std::env::temp_dir().join(format!("relava-blob-test-{}-{}", std::process::id(), id));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let store = LocalBlobStore::new(root.clone());
@@ -77,7 +72,9 @@ mod tests {
     #[test]
     fn store_and_fetch() {
         let (_root, store) = test_store();
-        store.store("skills/denden/1.0.0/SKILL.md", b"hello").unwrap();
+        store
+            .store("skills/denden/1.0.0/SKILL.md", b"hello")
+            .unwrap();
         let data = store.fetch("skills/denden/1.0.0/SKILL.md").unwrap();
         assert_eq!(data, b"hello");
     }

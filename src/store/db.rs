@@ -71,7 +71,9 @@ impl SqliteResourceStore {
     fn migrate(&self) -> Result<(), StoreError> {
         self.conn
             .execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
-            .map_err(|e| StoreError::Database(format!("failed to create schema_version table: {e}")))?;
+            .map_err(|e| {
+                StoreError::Database(format!("failed to create schema_version table: {e}"))
+            })?;
 
         let current: i64 = self
             .conn
@@ -95,7 +97,9 @@ impl SqliteResourceStore {
                     "INSERT INTO schema_version (version) VALUES (?1)",
                     [SCHEMA_VERSION],
                 )
-                .map_err(|e| StoreError::Database(format!("failed to update schema version: {e}")))?;
+                .map_err(|e| {
+                    StoreError::Database(format!("failed to update schema version: {e}"))
+                })?;
         }
 
         Ok(())
@@ -163,9 +167,9 @@ impl ResourceStore for SqliteResourceStore {
 
         stmt.query_row((scope, name, &rt), resource_from_row)
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound(format!(
-                    "{resource_type} '{name}' not found"
-                )),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::NotFound(format!("{resource_type} '{name}' not found"))
+                }
                 other => db_err(other),
             })
     }
@@ -185,8 +189,7 @@ impl ResourceStore for SqliteResourceStore {
             .query_map([resource_id], version_from_row)
             .map_err(db_err)?;
 
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(db_err)
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
     }
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError> {
@@ -366,7 +369,9 @@ mod tests {
 
         store.publish(&resource, &version).unwrap();
 
-        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
+        let found = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
         assert_eq!(found.name, "denden");
         assert_eq!(found.resource_type, "skill");
         assert_eq!(found.latest_version.as_deref(), Some("1.0.0"));
@@ -380,7 +385,9 @@ mod tests {
         store.publish(&resource, &sample_version("1.0.0")).unwrap();
         store.publish(&resource, &sample_version("1.1.0")).unwrap();
 
-        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
+        let found = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
         assert_eq!(found.latest_version.as_deref(), Some("1.1.0"));
     }
 
@@ -392,7 +399,9 @@ mod tests {
         store.publish(&resource, &sample_version("1.0.0")).unwrap();
         store.publish(&resource, &sample_version("1.1.0")).unwrap();
 
-        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
+        let found = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
         let versions = store.list_versions(found.id).unwrap();
         assert_eq!(versions.len(), 2);
     }
@@ -458,7 +467,9 @@ mod tests {
         store.publish(&global, &sample_version("1.0.0")).unwrap();
         store.publish(&scoped, &sample_version("2.0.0")).unwrap();
 
-        let g = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
+        let g = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
         assert_eq!(g.latest_version.as_deref(), Some("1.0.0"));
 
         let s = store
