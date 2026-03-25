@@ -112,6 +112,17 @@ metadata:
     skills:
       - security-baseline
       - style-guide
+    tools:
+      gh:
+        description: GitHub CLI
+        install:
+          macos: brew install gh
+          linux: apt install gh
+          windows: winget install GitHub.cli
+    env:
+      GITHUB_TOKEN:
+        required: true
+        description: GitHub API token for PR access
 ---
 ```
 
@@ -129,12 +140,64 @@ metadata:
       - code-review
     agents:
       - debugger
+    env:
+      SLACK_WEBHOOK:
+        required: false
+        description: Slack webhook URL for notifications
 ---
 ```
 
-On `relava install`, the CLI parses the `metadata.relava` block from the resource's `.md` file to discover and recursively install transitive dependencies. Each dependency resolves to the version pinned in the project's `relava.toml`, or the latest version in the registry if not pinned.
+#### `metadata.relava` Fields
 
-There is no separate `relava.toml` per resource — all dependency information lives in the frontmatter. The project-level `relava.toml` (see below) is where versions are pinned.
+| Field | Description |
+|-------|-------------|
+| `skills` | List of skill dependency names (resolved transitively) |
+| `agents` | List of agent dependency names (resolved transitively) |
+| `tools` | System tool dependencies with OS-specific install commands |
+| `env` | Environment variable requirements (required/optional with descriptions) |
+
+#### Tool Installation (`tools`)
+
+Resources can declare system tools they depend on. On `relava install`, the CLI:
+
+1. For each declared tool, checks if the binary exists on `PATH` via `which`/`where`
+2. If missing, detects current OS (macOS/Linux/Windows) and looks up the OS-specific install command
+3. Prompts the user for confirmation (skip with `--yes` flag)
+4. Executes the install command via subprocess
+5. Reports status: `installed`, `skipped`, `failed`, `declined`, `no_command`
+
+Tool installation failures are **non-fatal** — the resource is still installed, with a warning.
+
+```bash
+$ relava install skill code-review
+Installing skill code-review@1.0.0...
+  [skill]   .claude/skills/code-review/SKILL.md + 2 files
+  [tool]    gh — not found on PATH
+            Install with: brew install gh? [Y/n] y
+  [tool]    gh — installed
+Installed skill code-review@1.0.0
+```
+
+#### Environment Variables (`env`)
+
+Resources can declare required and optional environment variables. On `relava install`, the CLI:
+
+1. Checks each required env var against the process environment and `.claude/settings.json` `env` entries
+2. Warns for any missing required vars (does not block installation)
+3. `relava doctor` rechecks all installed resources for missing env vars
+
+```bash
+$ relava install skill code-review
+Installing skill code-review@1.0.0...
+  [skill]   .claude/skills/code-review/SKILL.md + 2 files
+  [warn]    Missing required env: GITHUB_TOKEN
+            Set in .claude/settings.json under "env"
+Installed skill code-review@1.0.0
+```
+
+On `relava install`, the CLI parses the `metadata.relava` block from the resource's `.md` file to discover and recursively install transitive dependencies, system tools, and check environment variables. Each dependency resolves to the version pinned in the project's `relava.toml`, or the latest version in the registry if not pinned.
+
+There is no separate `relava.toml` per resource — all metadata lives in the frontmatter. The project-level `relava.toml` (see below) is where versions are pinned.
 
 ### Resource Naming (Slug Format)
 
@@ -1193,6 +1256,8 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations — *depends on 6, 7, 3a*
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
 - ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `.claude/skills/<name>/`, handle multi-file directories
+- ⬜ 10a. Tool installation — parse `metadata.relava.tools`, check PATH via `which`, detect OS, prompt user, execute install commands — *depends on 2*
+- ⬜ 10b. Env var checking — parse `metadata.relava.env`, check required vars against environment and `.claude/settings.json`, warn if missing — *depends on 2*
 - ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
 - ⬜ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
 - ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
