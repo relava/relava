@@ -204,6 +204,9 @@ On install, `"*"` resolves to the latest published version. When `--save` writes
 A project-level `relava.toml` declares which resources are installed with version constraints:
 
 ```toml
+# Target agent platform — determines install paths and supported features
+agent_type = "claude"  # "claude" | "codex" | "gemini" (only "claude" supported in MVP)
+
 # Project resource declarations
 # Managed by `relava install --save` or edited by hand.
 
@@ -222,6 +225,16 @@ commit = "0.2.0"
 [rules]
 no-console-log = "1.0.0"
 ```
+
+The `agent_type` field tells Relava which platform conventions to follow for install paths, frontmatter parsing, and available resource types. In MVP, only `"claude"` is supported — other values produce a clear error.
+
+**Install paths by `agent_type`:**
+
+| agent_type | Skills | Agents | Commands | Rules |
+|------------|--------|--------|----------|-------|
+| `claude` | `.claude/skills/<name>/` | `.claude/agents/<name>.md` | `.claude/commands/<name>.md` | `.claude/rules/<name>.md` |
+| `codex` | TBD | TBD | TBD | TBD |
+| `gemini` | TBD | TBD | TBD | TBD |
 
 This file is:
 - **User-editable** — developers can hand-edit it directly
