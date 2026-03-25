@@ -40,6 +40,7 @@ fn main() {
             version,
             save: _save,
             global,
+            yes,
         } => {
             let Some(name) = name else {
                 eprintln!("missing resource name. Usage: relava install <type> <name>");
@@ -65,6 +66,7 @@ fn main() {
                 global,
                 json: cli.json,
                 verbose: cli.verbose,
+                yes,
             };
 
             match install::run(&opts) {
