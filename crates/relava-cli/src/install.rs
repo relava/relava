@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use relava_core::cache::DownloadCache;
+use relava_core::env_check::{self, EnvResult, EnvStatus};
+use relava_core::manifest::ResourceMeta;
 use relava_core::registry::RegistryClient;
 use relava_core::store::RelavaDir;
+use relava_core::tools::{self, ToolResult, ToolStatus};
 use relava_core::validate::{self, AgentType, ResourceType};
 use relava_core::version::Version;
 
@@ -16,6 +19,7 @@ pub struct InstallOpts<'a> {
     pub global: bool,
     pub json: bool,
     pub verbose: bool,
+    pub yes: bool,
 }
 
 /// Result of a successful install, used for JSON output.
@@ -26,6 +30,10 @@ pub struct InstallResult {
     pub version: String,
     pub files: Vec<String>,
     pub install_dir: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolResult>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvResult>,
 }
 
 /// Run `relava install <type> <name>`.
@@ -108,6 +116,16 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
             )
         };
         println!("  {type_tag:<10}{file_summary}");
+    }
+
+    // Post-install: tool checking and env var validation (skills only)
+    let (tool_results, env_results) = if opts.resource_type == ResourceType::Skill {
+        run_skill_post_install(opts, &install_dir)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    if !opts.json {
         println!("Installed {} {}@{}", opts.resource_type, opts.name, version);
     }
 
@@ -117,7 +135,108 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         version: version.to_string(),
         files: file_paths,
         install_dir: install_dir_display,
+        tools: tool_results,
+        env: env_results,
     })
+}
+
+/// Run skill-specific post-install steps: tool checking and env var validation.
+///
+/// Reads the installed SKILL.md frontmatter, checks tools, checks env vars.
+/// Tool/env failures are non-fatal — warnings only.
+fn run_skill_post_install(
+    opts: &InstallOpts,
+    install_dir: &Path,
+) -> Result<(Vec<ToolResult>, Vec<EnvResult>), String> {
+    if opts.resource_type != ResourceType::Skill {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let skill_md = install_dir.join("SKILL.md");
+    if !skill_md.exists() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let meta = match ResourceMeta::from_file(&skill_md) {
+        Ok(m) => m,
+        Err(e) => {
+            if !opts.json {
+                eprintln!("  [warn]    Could not parse skill metadata: {e}");
+            }
+            return Ok((Vec::new(), Vec::new()));
+        }
+    };
+
+    // Check and install tools
+    let prompt_fn: tools::PromptFn = Box::new(|msg| {
+        eprint!("            {msg} ");
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map(|_| {
+                let trimmed = input.trim().to_lowercase();
+                trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+            })
+            .unwrap_or(false)
+    });
+    let tool_results = tools::check_and_install_tools(&meta.tools, opts.yes, Some(&prompt_fn));
+
+    // Check env vars
+    let project_root = if opts.global {
+        dirs::home_dir()
+            .ok_or_else(|| "cannot determine home directory for env check".to_string())?
+    } else {
+        opts.project_dir.to_path_buf()
+    };
+    let env_results = env_check::check_env_vars(&meta.env, &project_root);
+
+    if !opts.json {
+        for result in &tool_results {
+            print_tool_result(result);
+        }
+        for result in &env_results {
+            print_env_result(result);
+        }
+    }
+
+    Ok((tool_results, env_results))
+}
+
+/// Print a tool check result to stdout.
+fn print_tool_result(result: &ToolResult) {
+    let suffix = match &result.status {
+        ToolStatus::Found => "found on PATH".to_string(),
+        ToolStatus::Installed => "installed".to_string(),
+        ToolStatus::Declined => "declined".to_string(),
+        ToolStatus::Failed(err) => format!("install failed: {err}"),
+        ToolStatus::NoCommand => "not found, no install command for this OS".to_string(),
+        ToolStatus::Skipped => "not found on PATH (skipped)".to_string(),
+    };
+    println!("  [tool]    {} — {suffix}", result.name);
+}
+
+/// Print an env var check result to stdout.
+fn print_env_result(result: &EnvResult) {
+    match result.status {
+        EnvStatus::FoundInEnv | EnvStatus::FoundInSettings => {
+            // Don't print anything for found vars (clean output)
+        }
+        EnvStatus::MissingRequired => {
+            println!("  [warn]    Missing required env: {}", result.name);
+            if !result.description.is_empty() {
+                println!("            {}", result.description);
+            }
+            println!("            Set in .claude/settings.json under env");
+        }
+        EnvStatus::MissingOptional => {
+            if !result.description.is_empty() {
+                println!(
+                    "  [warn]    Missing optional env: {} — {}",
+                    result.name, result.description
+                );
+            }
+        }
+    }
 }
 
 /// The primary file name for display purposes.
@@ -296,6 +415,74 @@ mod tests {
         cache
     }
 
+    /// Set up a cached skill with tools and env metadata in its SKILL.md frontmatter.
+    fn setup_cache_with_skill_metadata(cache_dir: &Path) -> DownloadCache {
+        let cache = DownloadCache::new(cache_dir.to_path_buf());
+        let v = Version::parse("1.0.0").unwrap();
+        let skill_md = r#"---
+name: code-review
+description: Code review with security checks
+metadata:
+  relava:
+    tools:
+      sh:
+        description: Bourne shell
+        install:
+          macos: echo already-installed
+          linux: echo already-installed
+          windows: echo already-installed
+      fake-tool-xyz-never-exists:
+        description: A tool that never exists
+        install:
+          nonexistent-os: echo nope
+    env:
+      PATH:
+        required: true
+        description: System PATH (always set)
+      RELAVA_TEST_MISSING_REQ_VAR_12345:
+        required: true
+        description: A missing required var
+      RELAVA_TEST_MISSING_OPT_VAR_12345:
+        required: false
+        description: A missing optional var
+---
+# Code Review Skill
+Review code for security issues.
+"#;
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "code-review".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "SKILL.md".to_string(),
+                content: encode_base64(skill_md.as_bytes()),
+            }],
+        };
+        cache
+            .store(ResourceType::Skill, "code-review", &v, &response)
+            .unwrap();
+        cache
+    }
+
+    /// Set up a cached skill with no frontmatter metadata.
+    fn setup_cache_with_plain_skill(cache_dir: &Path) -> DownloadCache {
+        let cache = DownloadCache::new(cache_dir.to_path_buf());
+        let v = Version::parse("1.0.0").unwrap();
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "plain-skill".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "SKILL.md".to_string(),
+                content: encode_base64(b"# Plain Skill\nNo metadata."),
+            }],
+        };
+        cache
+            .store(ResourceType::Skill, "plain-skill", &v, &response)
+            .unwrap();
+        cache
+    }
+
     #[test]
     fn write_skill_to_project() {
         let project = temp_dir();
@@ -412,6 +599,7 @@ mod tests {
             global: false,
             json: false,
             verbose: false,
+            yes: false,
         };
         let result = run(&opts);
         assert!(result.is_err());
@@ -450,6 +638,7 @@ mod tests {
             global: false,
             json: false,
             verbose: false,
+            yes: false,
         };
         let result = run(&opts);
         assert!(result.is_err());
@@ -459,5 +648,338 @@ mod tests {
             err.contains("not reachable") || err.contains("error") || err.contains("HTTP"),
             "Error message should indicate server issue: {err}"
         );
+    }
+
+    // -- Post-install tests --
+
+    /// Install the "code-review" skill with metadata and return post-install results.
+    /// Shared setup for most post-install tests.
+    fn run_post_install_with_metadata(
+        project: &Path,
+    ) -> (PathBuf, Vec<ToolResult>, Vec<EnvResult>) {
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_skill_metadata(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        let install_dir =
+            write_to_project(project, ResourceType::Skill, "code-review", &v, &cache).unwrap();
+
+        let opts = InstallOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Skill,
+            name: "code-review",
+            version_pin: None,
+            project_dir: project,
+            global: false,
+            json: true,
+            verbose: false,
+            yes: false,
+        };
+
+        let (tools, env) = run_skill_post_install(&opts, &install_dir).unwrap();
+        (install_dir, tools, env)
+    }
+
+    #[test]
+    fn post_install_parses_tool_metadata() {
+        let project = temp_dir();
+        let (install_dir, _, _) = run_post_install_with_metadata(project.path());
+
+        let meta = ResourceMeta::from_file(&install_dir.join("SKILL.md")).unwrap();
+        assert_eq!(meta.tools.len(), 2);
+        assert!(meta.tools.contains_key("sh"));
+        assert!(meta.tools.contains_key("fake-tool-xyz-never-exists"));
+    }
+
+    #[test]
+    fn post_install_parses_env_metadata() {
+        let project = temp_dir();
+        let (install_dir, _, _) = run_post_install_with_metadata(project.path());
+
+        let meta = ResourceMeta::from_file(&install_dir.join("SKILL.md")).unwrap();
+        assert_eq!(meta.env.len(), 3);
+        assert!(meta.env["PATH"].required);
+        assert!(meta.env["RELAVA_TEST_MISSING_REQ_VAR_12345"].required);
+        assert!(!meta.env["RELAVA_TEST_MISSING_OPT_VAR_12345"].required);
+    }
+
+    #[test]
+    fn post_install_tool_found_on_path() {
+        let project = temp_dir();
+        let (_, tool_results, _) = run_post_install_with_metadata(project.path());
+
+        let sh_result = tool_results.iter().find(|r| r.name == "sh").unwrap();
+        assert_eq!(sh_result.status, ToolStatus::Found);
+    }
+
+    #[test]
+    fn post_install_tool_no_command_for_os() {
+        let project = temp_dir();
+        let (_, tool_results, _) = run_post_install_with_metadata(project.path());
+
+        let missing = tool_results
+            .iter()
+            .find(|r| r.name == "fake-tool-xyz-never-exists")
+            .unwrap();
+        assert_eq!(missing.status, ToolStatus::NoCommand);
+    }
+
+    #[test]
+    fn post_install_env_found_in_process() {
+        let project = temp_dir();
+        let (_, _, env_results) = run_post_install_with_metadata(project.path());
+
+        let path_result = env_results.iter().find(|r| r.name == "PATH").unwrap();
+        assert_eq!(path_result.status, EnvStatus::FoundInEnv);
+    }
+
+    #[test]
+    fn post_install_env_missing_required() {
+        let project = temp_dir();
+        let (_, _, env_results) = run_post_install_with_metadata(project.path());
+
+        let missing = env_results
+            .iter()
+            .find(|r| r.name == "RELAVA_TEST_MISSING_REQ_VAR_12345")
+            .unwrap();
+        assert_eq!(missing.status, EnvStatus::MissingRequired);
+        assert!(missing.required);
+    }
+
+    #[test]
+    fn post_install_env_missing_optional() {
+        let project = temp_dir();
+        let (_, _, env_results) = run_post_install_with_metadata(project.path());
+
+        let optional = env_results
+            .iter()
+            .find(|r| r.name == "RELAVA_TEST_MISSING_OPT_VAR_12345")
+            .unwrap();
+        assert_eq!(optional.status, EnvStatus::MissingOptional);
+        assert!(!optional.required);
+    }
+
+    #[test]
+    fn post_install_env_in_settings_json() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_skill_metadata(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        let install_dir = write_to_project(
+            project.path(),
+            ResourceType::Skill,
+            "code-review",
+            &v,
+            &cache,
+        )
+        .unwrap();
+
+        // Write a settings.json with the missing required env var
+        let claude_dir = project.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"env": {"RELAVA_TEST_MISSING_REQ_VAR_12345": "some-token"}}"#,
+        )
+        .unwrap();
+
+        let opts = InstallOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Skill,
+            name: "code-review",
+            version_pin: None,
+            project_dir: project.path(),
+            global: false,
+            json: true,
+            verbose: false,
+            yes: false,
+        };
+
+        let (_, env_results) = run_skill_post_install(&opts, &install_dir).unwrap();
+
+        let req = env_results
+            .iter()
+            .find(|r| r.name == "RELAVA_TEST_MISSING_REQ_VAR_12345")
+            .unwrap();
+        assert_eq!(req.status, EnvStatus::FoundInSettings);
+    }
+
+    #[test]
+    fn post_install_skipped_for_non_skills() {
+        let project = temp_dir();
+        let install_dir = project.path().join(".claude/agents");
+        fs::create_dir_all(&install_dir).unwrap();
+
+        let opts = InstallOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Agent,
+            name: "debugger",
+            version_pin: None,
+            project_dir: project.path(),
+            global: false,
+            json: true,
+            verbose: false,
+            yes: false,
+        };
+
+        let (tools, env) = run_skill_post_install(&opts, &install_dir).unwrap();
+        assert!(tools.is_empty());
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn post_install_no_metadata_in_skill() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_plain_skill(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        let install_dir = write_to_project(
+            project.path(),
+            ResourceType::Skill,
+            "plain-skill",
+            &v,
+            &cache,
+        )
+        .unwrap();
+
+        let opts = InstallOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Skill,
+            name: "plain-skill",
+            version_pin: None,
+            project_dir: project.path(),
+            global: false,
+            json: true,
+            verbose: false,
+            yes: false,
+        };
+
+        let (tools, env) = run_skill_post_install(&opts, &install_dir).unwrap();
+        assert!(tools.is_empty());
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn post_install_malformed_frontmatter_warns_not_errors() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = DownloadCache::new(cache_dir.path().to_path_buf());
+        let v = Version::parse("1.0.0").unwrap();
+        // Malformed YAML frontmatter
+        let skill_md = "---\nmetadata:\n  relava:\n    tools: [invalid\n---\n# Bad Skill\n";
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "bad-meta".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "SKILL.md".to_string(),
+                content: encode_base64(skill_md.as_bytes()),
+            }],
+        };
+        cache
+            .store(ResourceType::Skill, "bad-meta", &v, &response)
+            .unwrap();
+
+        let install_dir =
+            write_to_project(project.path(), ResourceType::Skill, "bad-meta", &v, &cache).unwrap();
+
+        let opts = InstallOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Skill,
+            name: "bad-meta",
+            version_pin: None,
+            project_dir: project.path(),
+            global: false,
+            json: true,
+            verbose: false,
+            yes: false,
+        };
+
+        // Should return Ok with empty results, not Err
+        let (tools, env) = run_skill_post_install(&opts, &install_dir).unwrap();
+        assert!(tools.is_empty());
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn install_result_serializes_with_tools_and_env() {
+        let result = InstallResult {
+            resource_type: "skill".to_string(),
+            name: "code-review".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec!["SKILL.md".to_string()],
+            install_dir: ".claude/skills/code-review".to_string(),
+            tools: vec![ToolResult {
+                name: "gh".to_string(),
+                description: "GitHub CLI".to_string(),
+                status: ToolStatus::Found,
+            }],
+            env: vec![EnvResult {
+                name: "GITHUB_TOKEN".to_string(),
+                description: "GitHub API token".to_string(),
+                required: true,
+                status: EnvStatus::MissingRequired,
+            }],
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("\"tools\""));
+        assert!(json.contains("\"gh\""));
+        assert!(json.contains("\"env\""));
+        assert!(json.contains("GITHUB_TOKEN"));
+        assert!(json.contains("missing_required"));
+    }
+
+    #[test]
+    fn install_result_omits_empty_tools_and_env() {
+        let result = InstallResult {
+            resource_type: "agent".to_string(),
+            name: "debugger".to_string(),
+            version: "0.5.0".to_string(),
+            files: vec!["debugger.md".to_string()],
+            install_dir: ".claude/agents".to_string(),
+            tools: Vec::new(),
+            env: Vec::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(!json.contains("\"tools\""), "empty tools should be omitted");
+        assert!(!json.contains("\"env\""), "empty env should be omitted");
+    }
+
+    #[test]
+    fn print_tool_result_all_statuses() {
+        let statuses = vec![
+            ToolStatus::Found,
+            ToolStatus::Installed,
+            ToolStatus::Declined,
+            ToolStatus::Failed("error msg".to_string()),
+            ToolStatus::NoCommand,
+            ToolStatus::Skipped,
+        ];
+        for status in statuses {
+            print_tool_result(&ToolResult {
+                name: "test".to_string(),
+                description: "test tool".to_string(),
+                status,
+            });
+        }
+    }
+
+    #[test]
+    fn print_env_result_all_statuses() {
+        let statuses = vec![
+            EnvStatus::FoundInEnv,
+            EnvStatus::FoundInSettings,
+            EnvStatus::MissingRequired,
+            EnvStatus::MissingOptional,
+        ];
+        for status in statuses {
+            print_env_result(&EnvResult {
+                name: "TEST_VAR".to_string(),
+                description: "test".to_string(),
+                required: true,
+                status,
+            });
+        }
     }
 }

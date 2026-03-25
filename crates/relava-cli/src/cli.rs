@@ -50,6 +50,10 @@ pub enum Command {
         /// Install globally to ~/.claude/
         #[arg(long)]
         global: bool,
+
+        /// Auto-accept tool install prompts
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Remove a resource from the current project
