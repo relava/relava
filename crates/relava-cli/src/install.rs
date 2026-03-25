@@ -30,10 +30,21 @@ pub struct InstallResult {
     pub version: String,
     pub files: Vec<String>,
     pub install_dir: String,
+    /// Files that were overwritten during installation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overwritten: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvResult>,
+}
+
+/// Result of writing files to the project directory.
+struct WriteResult {
+    /// The directory files were written to.
+    install_dir: PathBuf,
+    /// Files that already existed and were overwritten.
+    overwritten: Vec<String>,
 }
 
 /// Run `relava install <type> <name>`.
@@ -92,7 +103,10 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     };
 
     // Write files to the correct Claude Code location
-    let install_dir = write_to_project(
+    let WriteResult {
+        install_dir,
+        overwritten,
+    } = write_to_project(
         &install_root,
         opts.resource_type,
         opts.name,
@@ -105,6 +119,11 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     let install_dir_display = install_dir.to_string_lossy().to_string();
 
     if !opts.json {
+        // Emit overwrite warnings before the file summary
+        for file in &overwritten {
+            println!("  [warn]    Overwrote existing file: {file}");
+        }
+
         let type_tag = format!("[{}]", opts.resource_type);
         let file_summary = if file_count == 1 {
             install_dir_display.clone()
@@ -135,6 +154,7 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         version: version.to_string(),
         files: file_paths,
         install_dir: install_dir_display,
+        overwritten,
         tools: tool_results,
         env: env_results,
     })
@@ -252,14 +272,14 @@ fn primary_file(resource_type: ResourceType, name: &str) -> String {
 
 /// Write cached resource files to the project's Claude Code directory.
 ///
-/// Returns the install directory path.
+/// Returns the install directory and a list of files that were overwritten.
 fn write_to_project(
     project_root: &Path,
     resource_type: ResourceType,
     name: &str,
     version: &Version,
     cache: &DownloadCache,
-) -> Result<PathBuf, String> {
+) -> Result<WriteResult, String> {
     let agent_type = AgentType::Claude;
     let file_paths = cache
         .list_files(resource_type, name, version)
@@ -283,6 +303,8 @@ fn write_to_project(
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| format!("failed to create {}: {}", install_dir.display(), e))?;
 
+    let mut overwritten = Vec::new();
+
     match resource_type {
         ResourceType::Skill => {
             // Multi-file resource: copy all files preserving directory structure
@@ -291,6 +313,9 @@ fn write_to_project(
                     .read_file(resource_type, name, version, file_path)
                     .map_err(|e| e.to_string())?;
                 let dest = install_dir.join(file_path);
+                if dest.exists() {
+                    overwritten.push(file_path.clone());
+                }
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
@@ -307,12 +332,18 @@ fn write_to_project(
                 .read_file(resource_type, name, version, source_path)
                 .map_err(|e| e.to_string())?;
             let dest = install_dir.join(format!("{name}.md"));
+            if dest.exists() {
+                overwritten.push(format!("{name}.md"));
+            }
             std::fs::write(&dest, &content)
                 .map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
         }
     }
 
-    Ok(install_dir)
+    Ok(WriteResult {
+        install_dir,
+        overwritten,
+    })
 }
 
 /// Parse a resource type string from CLI input.
@@ -490,10 +521,14 @@ Review code for security issues.
         let cache = setup_cache_with_skill(cache_dir.path());
         let v = Version::parse("1.0.0").unwrap();
 
-        let dir =
+        let result =
             write_to_project(project.path(), ResourceType::Skill, "denden", &v, &cache).unwrap();
 
-        assert_eq!(dir, project.path().join(".claude/skills/denden"));
+        assert_eq!(
+            result.install_dir,
+            project.path().join(".claude/skills/denden")
+        );
+        assert!(result.overwritten.is_empty());
         assert!(
             project
                 .path()
@@ -519,10 +554,11 @@ Review code for security issues.
         let cache = setup_cache_with_agent(cache_dir.path());
         let v = Version::parse("0.5.0").unwrap();
 
-        let dir =
+        let result =
             write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
 
-        assert_eq!(dir, project.path().join(".claude/agents"));
+        assert_eq!(result.install_dir, project.path().join(".claude/agents"));
+        assert!(result.overwritten.is_empty());
         let agent_path = project.path().join(".claude/agents/debugger.md");
         assert!(agent_path.exists());
         let content = fs::read_to_string(&agent_path).unwrap();
@@ -536,10 +572,11 @@ Review code for security issues.
         let cache = setup_cache_with_command(cache_dir.path());
         let v = Version::parse("1.0.0").unwrap();
 
-        let dir =
+        let result =
             write_to_project(project.path(), ResourceType::Command, "commit", &v, &cache).unwrap();
 
-        assert_eq!(dir, project.path().join(".claude/commands"));
+        assert_eq!(result.install_dir, project.path().join(".claude/commands"));
+        assert!(result.overwritten.is_empty());
         let cmd_path = project.path().join(".claude/commands/commit.md");
         assert!(cmd_path.exists());
         let content = fs::read_to_string(&cmd_path).unwrap();
@@ -553,7 +590,7 @@ Review code for security issues.
         let cache = setup_cache_with_rule(cache_dir.path());
         let v = Version::parse("1.0.0").unwrap();
 
-        let dir = write_to_project(
+        let result = write_to_project(
             project.path(),
             ResourceType::Rule,
             "no-console-log",
@@ -562,7 +599,8 @@ Review code for security issues.
         )
         .unwrap();
 
-        assert_eq!(dir, project.path().join(".claude/rules"));
+        assert_eq!(result.install_dir, project.path().join(".claude/rules"));
+        assert!(result.overwritten.is_empty());
         let rule_path = project.path().join(".claude/rules/no-console-log.md");
         assert!(rule_path.exists());
         let content = fs::read_to_string(&rule_path).unwrap();
@@ -660,8 +698,9 @@ Review code for security issues.
         let cache_dir = temp_dir();
         let cache = setup_cache_with_skill_metadata(cache_dir.path());
         let v = Version::parse("1.0.0").unwrap();
-        let install_dir =
-            write_to_project(project, ResourceType::Skill, "code-review", &v, &cache).unwrap();
+        let install_dir = write_to_project(project, ResourceType::Skill, "code-review", &v, &cache)
+            .unwrap()
+            .install_dir;
 
         let opts = InstallOpts {
             server_url: "http://localhost:7420",
@@ -771,7 +810,8 @@ Review code for security issues.
             &v,
             &cache,
         )
-        .unwrap();
+        .unwrap()
+        .install_dir;
 
         // Write a settings.json with the missing required env var
         let claude_dir = project.path().join(".claude");
@@ -839,7 +879,8 @@ Review code for security issues.
             &v,
             &cache,
         )
-        .unwrap();
+        .unwrap()
+        .install_dir;
 
         let opts = InstallOpts {
             server_url: "http://localhost:7420",
@@ -880,7 +921,9 @@ Review code for security issues.
             .unwrap();
 
         let install_dir =
-            write_to_project(project.path(), ResourceType::Skill, "bad-meta", &v, &cache).unwrap();
+            write_to_project(project.path(), ResourceType::Skill, "bad-meta", &v, &cache)
+                .unwrap()
+                .install_dir;
 
         let opts = InstallOpts {
             server_url: "http://localhost:7420",
@@ -908,6 +951,7 @@ Review code for security issues.
             version: "1.0.0".to_string(),
             files: vec!["SKILL.md".to_string()],
             install_dir: ".claude/skills/code-review".to_string(),
+            overwritten: Vec::new(),
             tools: vec![ToolResult {
                 name: "gh".to_string(),
                 description: "GitHub CLI".to_string(),
@@ -937,6 +981,7 @@ Review code for security issues.
             version: "0.5.0".to_string(),
             files: vec!["debugger.md".to_string()],
             install_dir: ".claude/agents".to_string(),
+            overwritten: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
         };
@@ -981,5 +1026,269 @@ Review code for security issues.
                 status,
             });
         }
+    }
+
+    // -- Overwrite detection tests --
+
+    #[test]
+    fn overwrite_detected_for_agent() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_agent(cache_dir.path());
+        let v = Version::parse("0.5.0").unwrap();
+
+        // First install — no overwrite
+        let result =
+            write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+        assert!(result.overwritten.is_empty());
+
+        // Second install — should detect overwrite
+        let result =
+            write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+        assert_eq!(result.overwritten, vec!["debugger.md"]);
+    }
+
+    #[test]
+    fn overwrite_detected_for_command() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_command(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+
+        // First install
+        write_to_project(project.path(), ResourceType::Command, "commit", &v, &cache).unwrap();
+
+        // Second install — overwrite
+        let result =
+            write_to_project(project.path(), ResourceType::Command, "commit", &v, &cache).unwrap();
+        assert_eq!(result.overwritten, vec!["commit.md"]);
+    }
+
+    #[test]
+    fn overwrite_detected_for_rule() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_rule(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+
+        // First install
+        write_to_project(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log",
+            &v,
+            &cache,
+        )
+        .unwrap();
+
+        // Second install — overwrite
+        let result = write_to_project(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log",
+            &v,
+            &cache,
+        )
+        .unwrap();
+        assert_eq!(result.overwritten, vec!["no-console-log.md"]);
+    }
+
+    #[test]
+    fn overwrite_detected_for_skill() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_skill(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+
+        // First install
+        write_to_project(project.path(), ResourceType::Skill, "denden", &v, &cache).unwrap();
+
+        // Second install — should detect overwritten files
+        let result =
+            write_to_project(project.path(), ResourceType::Skill, "denden", &v, &cache).unwrap();
+        assert!(result.overwritten.contains(&"SKILL.md".to_string()));
+        assert!(
+            result
+                .overwritten
+                .contains(&"templates/greeting.md".to_string())
+        );
+    }
+
+    #[test]
+    fn overwrite_updates_file_content() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+
+        // Install initial version
+        let cache = setup_cache_with_agent(cache_dir.path());
+        let v = Version::parse("0.5.0").unwrap();
+        write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+
+        let path = project.path().join(".claude/agents/debugger.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# Debugger Agent");
+
+        // Install updated version with different content
+        let v2 = Version::parse("0.6.0").unwrap();
+        let response = DownloadResponse {
+            resource_type: "agent".to_string(),
+            name: "debugger".to_string(),
+            version: "0.6.0".to_string(),
+            files: vec![DownloadFile {
+                path: "debugger.md".to_string(),
+                content: encode_base64(b"# Debugger Agent v2\nUpdated content"),
+            }],
+        };
+        cache
+            .store(ResourceType::Agent, "debugger", &v2, &response)
+            .unwrap();
+
+        let result =
+            write_to_project(project.path(), ResourceType::Agent, "debugger", &v2, &cache).unwrap();
+        assert_eq!(result.overwritten, vec!["debugger.md"]);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# Debugger Agent v2\nUpdated content"
+        );
+    }
+
+    #[test]
+    fn agent_creates_directory_if_missing() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_agent(cache_dir.path());
+        let v = Version::parse("0.5.0").unwrap();
+
+        // Directory doesn't exist yet
+        assert!(!project.path().join(".claude/agents").exists());
+
+        let result =
+            write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+
+        assert!(project.path().join(".claude/agents").is_dir());
+        assert!(project.path().join(".claude/agents/debugger.md").exists());
+        assert!(result.overwritten.is_empty());
+    }
+
+    #[test]
+    fn command_creates_directory_if_missing() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_command(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+
+        assert!(!project.path().join(".claude/commands").exists());
+
+        write_to_project(project.path(), ResourceType::Command, "commit", &v, &cache).unwrap();
+
+        assert!(project.path().join(".claude/commands").is_dir());
+        assert!(project.path().join(".claude/commands/commit.md").exists());
+    }
+
+    #[test]
+    fn rule_creates_directory_if_missing() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_rule(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+
+        assert!(!project.path().join(".claude/rules").exists());
+
+        write_to_project(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log",
+            &v,
+            &cache,
+        )
+        .unwrap();
+
+        assert!(project.path().join(".claude/rules").is_dir());
+        assert!(
+            project
+                .path()
+                .join(".claude/rules/no-console-log.md")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn install_result_serializes_overwritten() {
+        let result = InstallResult {
+            resource_type: "agent".to_string(),
+            name: "debugger".to_string(),
+            version: "0.5.0".to_string(),
+            files: vec!["debugger.md".to_string()],
+            install_dir: ".claude/agents".to_string(),
+            overwritten: vec!["debugger.md".to_string()],
+            tools: Vec::new(),
+            env: Vec::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("\"overwritten\""));
+        assert!(json.contains("debugger.md"));
+    }
+
+    #[test]
+    fn install_result_omits_empty_overwritten() {
+        let result = InstallResult {
+            resource_type: "agent".to_string(),
+            name: "debugger".to_string(),
+            version: "0.5.0".to_string(),
+            files: vec!["debugger.md".to_string()],
+            install_dir: ".claude/agents".to_string(),
+            overwritten: Vec::new(),
+            tools: Vec::new(),
+            env: Vec::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            !json.contains("\"overwritten\""),
+            "empty overwritten should be omitted"
+        );
+    }
+
+    #[test]
+    fn multiple_resources_in_same_directory() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+
+        // Install two different agents to the same .claude/agents/ directory
+        let cache = DownloadCache::new(cache_dir.path().to_path_buf());
+        let v = Version::parse("1.0.0").unwrap();
+
+        let response1 = DownloadResponse {
+            resource_type: "agent".to_string(),
+            name: "debugger".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "debugger.md".to_string(),
+                content: encode_base64(b"# Debugger Agent"),
+            }],
+        };
+        cache
+            .store(ResourceType::Agent, "debugger", &v, &response1)
+            .unwrap();
+
+        let response2 = DownloadResponse {
+            resource_type: "agent".to_string(),
+            name: "reviewer".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "reviewer.md".to_string(),
+                content: encode_base64(b"# Reviewer Agent"),
+            }],
+        };
+        cache
+            .store(ResourceType::Agent, "reviewer", &v, &response2)
+            .unwrap();
+
+        write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+        write_to_project(project.path(), ResourceType::Agent, "reviewer", &v, &cache).unwrap();
+
+        // Both agents should exist side by side
+        assert!(project.path().join(".claude/agents/debugger.md").exists());
+        assert!(project.path().join(".claude/agents/reviewer.md").exists());
     }
 }
