@@ -924,11 +924,35 @@ bin/
 
 2. **Install record filtering** — Relava tracks which files it installed in `installations.installed_files_json`. On sync/publish, it can automatically exclude files it knows it placed (binaries, generated artifacts) unless the user explicitly modified them.
 
+### Change Detection
+
+Before publishing, Relava compares the local resource directory against the version currently in the registry. If nothing has changed, it skips the publish and reports "no changes detected."
+
+```bash
+$ relava publish skill denden
+Comparing skill denden against registry version 1.2.0...
+No changes detected. Nothing to publish.
+
+$ relava publish skill denden
+Comparing skill denden against registry version 1.2.0...
+  [modified] SKILL.md
+  [added]    templates/review-checklist.md
+Publish as 1.3.0? [Y/n] y
+Published skill denden@1.3.0
+```
+
+Change detection works by comparing SHA-256 checksums of each file (after applying `.relavaignore` filters) against the checksums stored in the registry for the latest version. This is a content-level comparison — timestamps are ignored.
+
+### Publish Flow
+
 On `relava publish`, the CLI:
 1. Reads `.relavaignore` if present
 2. Collects all files in the resource directory, excluding ignored patterns
-3. Validates file limits (100 files, 10 MB each, 50 MB total)
-4. Uploads via multipart HTTP POST as a new version
+3. Computes SHA-256 per file and compares against the latest published version in the registry
+4. If no files changed: print "no changes detected" and exit
+5. If changes exist: show a diff summary (added/modified/removed files) and prompt for confirmation
+6. Validates file limits (100 files, 10 MB each, 50 MB total)
+7. Uploads via multipart HTTP POST as a new version
 
 ### Name Conflicts on Publish
 
