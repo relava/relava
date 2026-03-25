@@ -143,6 +143,12 @@ impl ResourceMeta {
 ///
 /// [agents]
 /// debugger = "0.5.0"
+///
+/// [commands]
+/// delegate = "1.0.0"
+///
+/// [rules]
+/// no-console-log = "1.0.0"
 /// ```
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -157,6 +163,12 @@ pub struct ProjectManifest {
 
     #[serde(default)]
     pub agents: BTreeMap<String, String>,
+
+    #[serde(default)]
+    pub commands: BTreeMap<String, String>,
+
+    #[serde(default)]
+    pub rules: BTreeMap<String, String>,
 }
 
 impl ProjectManifest {
