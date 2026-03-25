@@ -1,8 +1,4 @@
 mod cli;
-mod manifest;
-mod store;
-mod validate;
-mod version;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};

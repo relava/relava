@@ -1,0 +1,14 @@
+[package]
+name = "relava-cli"
+description = "CLI binary for Relava — a local package manager for Claude Code prompt-layer artifacts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "relava"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+relava-core.workspace = true
