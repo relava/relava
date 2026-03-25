@@ -323,6 +323,74 @@ Not implemented in MVP, but the schema and API are designed to accommodate:
 - Resource slugs remain flat within a scope — `@team/foo` and `@user/foo` can coexist
 - No permission checks in MVP — all resources are globally readable and writable
 
+### Future: Authentication & SSO
+
+Not implemented in MVP (server binds to `127.0.0.1`, no auth), but the design must accommodate:
+
+**Authentication methods (progressive):**
+1. **API tokens** (Phase 1 enterprise) — server generates bearer tokens, CLI stores in `~/.relava/config.toml`. Simple, works for CI/CD.
+2. **Username/password** — `relava login` command, token returned and stored locally.
+3. **SSO/OIDC** (enterprise) — integrate with corporate identity providers (Okta, Azure AD, Google Workspace) via OpenID Connect. `relava login` opens browser for OAuth flow, receives token via localhost callback.
+4. **SAML** (enterprise) — for organizations that require SAML-based SSO.
+
+**Design constraints for MVP code:**
+- All API endpoints should accept an optional `Authorization: Bearer <token>` header — ignored in MVP, enforced when auth is enabled
+- CLI should have a `--token` global option and read from `RELAVA_TOKEN` env var — wired up but not required in MVP
+- Server config should have an `auth.enabled` flag (default: `false` for local, `true` for enterprise)
+- Session/token validation should be a middleware layer in Axum — easy to add without changing endpoint handlers
+
+### Future: Scalability & Storage Abstraction
+
+The MVP uses SQLite + local filesystem. For enterprise, the storage layer must be swappable without changing business logic or the API.
+
+**Storage abstraction traits (Rust):**
+
+```rust
+// Implemented in MVP with SQLite, swappable to PostgreSQL/CockroachDB
+trait ResourceStore {
+    fn get_resource(&self, scope: Option<&str>, name: &str, resource_type: &str) -> Result<Resource>;
+    fn list_versions(&self, resource_id: i64) -> Result<Vec<Version>>;
+    fn publish(&self, resource: &Resource, version: &Version) -> Result<()>;
+    fn search(&self, query: &str, resource_type: Option<&str>) -> Result<Vec<Resource>>;
+}
+
+// Implemented in MVP with local filesystem, swappable to S3/GCS/MinIO
+trait BlobStore {
+    fn store(&self, path: &str, data: &[u8]) -> Result<()>;
+    fn fetch(&self, path: &str) -> Result<Vec<u8>>;
+    fn delete(&self, path: &str) -> Result<()>;
+    fn exists(&self, path: &str) -> Result<bool>;
+}
+
+// Implemented in MVP with SQLite FTS5, swappable to vector search
+trait SearchBackend {
+    fn index(&self, resource: &Resource, version: &Version) -> Result<()>;
+    fn search(&self, query: &str, resource_type: Option<&str>, limit: usize) -> Result<Vec<SearchResult>>;
+}
+```
+
+**Migration paths:**
+
+| Layer | MVP | Enterprise | Migration |
+|-------|-----|------------|-----------|
+| **Database** | SQLite (single file) | PostgreSQL or CockroachDB | Swap `ResourceStore` impl. Schema is already standard SQL. |
+| **File store** | `~/.relava/store/` (local fs) | S3, GCS, or MinIO | Swap `BlobStore` impl. Store paths map directly to object keys. |
+| **Search** | SQLite FTS5 (keyword) | Hybrid: vector embeddings + text | Swap `SearchBackend` impl. Add embeddings on publish. |
+| **HTTP server** | Single Axum instance | Multiple instances + load balancer | Already stateless. Add shared DB + object store. |
+| **Auth** | None (localhost only) | Bearer tokens → OIDC/SAML SSO | Add Axum middleware layer. Endpoints unchanged. |
+
+**Semantic search extension:**
+- On publish, generate embeddings (via OpenAI API or local model) and store alongside resource metadata
+- On search, embed the query and combine vector similarity score with FTS text score (hybrid ranking)
+- SQLite has `sqlite-vec` extension for local vector search; PostgreSQL has `pgvector`
+- The `SearchBackend` trait abstracts this — MVP uses FTS5, enterprise uses hybrid
+
+**Design constraints for MVP code:**
+- Database access must go through the `ResourceStore` trait, not raw SQL in handlers
+- File I/O must go through the `BlobStore` trait, not direct `fs::read`/`fs::write` in handlers
+- Search must go through the `SearchBackend` trait
+- These traits are defined in MVP and have SQLite/filesystem implementations — swapping is adding a new impl, not refactoring existing code
+
 ### REST API
 
 Base URL: `http://localhost:7420/api/v1`
