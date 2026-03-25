@@ -77,25 +77,22 @@ Relava solves this by providing:
 
 ### Component Interactions
 
-1. **CLI** talks to the **Local Server** via REST API (or operates in direct mode when server is not running for basic operations).
+1. **CLI** talks to the **Local Server** exclusively via REST API. The server must be running for all operations.
 2. **GUI** is a web application served by the Local Server.
 3. **Local Server** manages the **Resource Store** (published resource files), **SQLite DB** (metadata, installation records), and performs **Installations** (copying files to project directories).
 4. **Project Filesystem** is the target — Relava writes files to standard Claude Code locations within each project.
 5. **Global State** (`~/.relava/`) persists across projects — the resource store, database, and configuration.
 
-### Direct Mode vs. Server Mode
+### REST-First Architecture
 
-For simple operations (`relava list skills`, `relava install` for cached resources), the CLI can operate directly against the SQLite DB and filesystem without the server running. The server is required for the GUI, search, and background operations.
+All CLI operations go through the server's REST API — there is no direct mode. If the server is not running, the CLI prints an error: `Server not reachable. Run 'relava server start' first.`
 
-### Install Transport: HTTP Download
+This design choice is deliberate:
 
-All installs go through HTTP, even locally. The CLI downloads resource files from the server via `GET /api/v1/resources/:type/:name/versions/:version/download` rather than copying directly from the store filesystem. This design:
-
-- **Enables future cloud registries** — switching from `localhost:7420` to a remote registry URL requires zero changes to the install pipeline
-- **Keeps the store opaque** — only the server reads/writes `~/.relava/store/`; the CLI never accesses it directly during install
-- **Supports caching** — downloaded resources are cached in `~/.relava/cache/` for offline re-installs
-
-In direct mode (server not running), the CLI falls back to filesystem reads from the local store for basic operations.
+- **Enterprise-ready** — the same CLI works against a local server (`localhost:7420`) or an organization's hosted registry (`registry.company.com`). Switching is just a `--server` URL change.
+- **Keeps the store opaque** — only the server reads/writes `~/.relava/store/` and the SQLite DB. The CLI never touches them directly.
+- **Single code path** — no branching between "direct mode" and "server mode" simplifies the CLI and avoids subtle behavioral differences.
+- **Supports caching** — downloaded resources are cached in `~/.relava/cache/` for faster re-installs.
 
 ---
 
@@ -259,13 +256,14 @@ The Relava server is a local registry that stores published resources and serves
 -- Available resources in the registry
 CREATE TABLE resources (
   id            INTEGER PRIMARY KEY,
+  scope         TEXT,           -- nullable; reserved for future scoping (@org/name)
   name          TEXT NOT NULL,
   type          TEXT NOT NULL,  -- 'skill' | 'agent' | 'command' | 'rule'
   description   TEXT,
   latest_version TEXT,
   metadata_json TEXT,           -- full manifest as JSON
   updated_at    TIMESTAMP,
-  UNIQUE(name, type)
+  UNIQUE(scope, name, type)
 );
 
 -- Resource versions
@@ -898,7 +896,74 @@ When removing a resource, Relava checks whether it is a dependency of other inst
 
 ---
 
-## 9. Implementation Plan
+## 9. Syncing Local Changes Back to Registry
+
+When a resource is installed into a project, the user may modify it (e.g., edit SKILL.md, add files). They may then want to publish those changes back to the registry as a new version.
+
+### The Problem
+
+Installed resource directories may contain files that should NOT be synced back:
+- Binaries installed during setup
+- Generated artifacts, caches, or build outputs
+- OS-specific files (`.DS_Store`, etc.)
+
+### Solution: `.relavaignore` + Install Record
+
+Two mechanisms work together:
+
+1. **`.relavaignore`** — A file in the resource directory (like `.gitignore`) that lists patterns to exclude from publish/sync. Resource authors include this in their package.
+
+```
+# .relavaignore
+bin/
+*.so
+*.dylib
+*.exe
+.DS_Store
+```
+
+2. **Install record filtering** — Relava tracks which files it installed in `installations.installed_files_json`. On sync/publish, it can automatically exclude files it knows it placed (binaries, generated artifacts) unless the user explicitly modified them.
+
+### Change Detection
+
+Before publishing, Relava compares the local resource directory against the version currently in the registry. If nothing has changed, it skips the publish and reports "no changes detected."
+
+```bash
+$ relava publish skill denden
+Comparing skill denden against registry version 1.2.0...
+No changes detected. Nothing to publish.
+
+$ relava publish skill denden
+Comparing skill denden against registry version 1.2.0...
+  [modified] SKILL.md
+  [added]    templates/review-checklist.md
+Publish as 1.3.0? [Y/n] y
+Published skill denden@1.3.0
+```
+
+Change detection works by comparing SHA-256 checksums of each file (after applying `.relavaignore` filters) against the checksums stored in the registry for the latest version. This is a content-level comparison — timestamps are ignored.
+
+### Publish Flow
+
+On `relava publish`, the CLI:
+1. Reads `.relavaignore` if present
+2. Collects all files in the resource directory, excluding ignored patterns
+3. Computes SHA-256 per file and compares against the latest published version in the registry
+4. If no files changed: print "no changes detected" and exit
+5. If changes exist: show a diff summary (added/modified/removed files) and prompt for confirmation
+6. Validates file limits (100 files, 10 MB each, 50 MB total)
+7. Uploads via multipart HTTP POST as a new version
+
+### Name Conflicts on Publish
+
+When publishing a new or modified resource to the registry and the name already exists:
+
+- **Same resource, new version**: The normal case. Relava requires a version bump — the new version must be strictly greater than the latest published version.
+- **Name taken by another resource**: Reject with error: `"Resource 'code-review' already exists in the registry. Choose a different name."` In the future, scoping (`@org/code-review`) will allow multiple owners to use the same base name.
+
+---
+
+## 10. Implementation Plan
 
 ### Phase 1: Core CLI + Resource Format + Local Storage (Weeks 1-3)
 
@@ -947,7 +1012,7 @@ When removing a resource, Relava checks whether it is a dependency of other inst
 
 ---
 
-## 10. Tech Stack Recommendations
+## 11. Tech Stack Recommendations
 
 ### CLI + Server: Rust
 
@@ -982,7 +1047,7 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 ---
 
-## 11. Open Questions
+## 12. Open Questions
 
 ### Must Resolve Before Phase 1
 
@@ -1012,7 +1077,7 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 ---
 
-## 12. Implementation Order
+## 13. Implementation Order
 
 Trackable checklist of every deliverable from the Implementation Plan (Section 8). Items are numbered sequentially across all phases. Status key: ⬜ Not Started · 🟡 In Progress · ✅ Complete.
 
@@ -1035,7 +1100,6 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 8. `relava init` — create project `relava.toml`, register project in database, scan for existing Claude Code resources
 - ⬜ 9. `relava install <type> <name>` — resolve version constraint, download files via HTTP from server, write to correct Claude Code locations — *depends on 6, 7, 3a*
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
-- ⬜ 9b. Direct mode fallback — when server is not running, fall back to filesystem reads from local store for basic install operations — *depends on 9a*
 - ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `skills/<name>/`, handle multi-file directories
 - ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
 - ⬜ 12a. Dependency declaration parser — parse `[skills]`, `[agents]` sections from resource manifest — *depends on 2*
@@ -1071,7 +1135,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 27. Resources REST endpoints — `GET /resources`, `GET /resources/:type/:name`, `POST /resources/:type/:name`, `DELETE /resources/:type/:name` — *depends on 25*
 - ⬜ 28. Resource versions REST endpoints — `GET /resources/:type/:name/versions`, `GET /resources/:type/:name/versions/:version` — *depends on 27*
 - ⬜ 29. Projects REST endpoints — `GET /projects`, `POST /projects`, `GET /projects/:id`, `DELETE /projects/:id`, `GET /projects/:id/installations` — *depends on 25*
-- ⬜ 30. CLI refactor — detect running server, use REST API when available, fall back to direct SQLite mode when not — *depends on 27, 29*
+- ⬜ 30. CLI refactor — all operations go through REST API, fail with clear error if server is unreachable — *depends on 27, 29*
 
 #### Week 5 — Server Features & Publish
 
