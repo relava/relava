@@ -1,0 +1,9 @@
+[package]
+name = "relava"
+version = "0.1.0"
+edition = "2024"
+description = "A local package manager for Claude Code prompt-layer artifacts"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
