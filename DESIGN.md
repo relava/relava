@@ -289,6 +289,40 @@ CREATE TABLE versions (
 
 The server does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
 
+### Future: Enterprise Scoping & Permissions
+
+Not implemented in MVP, but the schema and API are designed to accommodate:
+
+**Scope types:**
+- **Personal** (`@alice/code-review`) — owned by a user, visible only to them or explicitly shared
+- **Team** (`@platform-team/deploy-check`) — owned by a team, visible to team members
+- **Global** (no scope, `code-review`) — the current MVP behavior, visible to all
+
+**Users & permissions (future tables, not created in MVP):**
+```sql
+-- Reserved for enterprise extension
+-- CREATE TABLE users (id, username, email, created_at);
+-- CREATE TABLE teams (id, name, created_at);
+-- CREATE TABLE team_members (team_id, user_id, role);  -- role: 'admin' | 'member' | 'reader'
+-- CREATE TABLE resource_permissions (resource_id, scope_type, scope_id, permission);  -- permission: 'read' | 'write'
+```
+
+**Visibility & sharing permissions (per scope):**
+- **Global** — default visibility is `public` (all users can read). Write requires `publish` permission (configurable: open to all, or restricted to admins).
+- **Team** — default visibility is team members only. Admins can grant `read` to other teams or individual users for cross-team sharing. Write requires `member` or `admin` role.
+- **Personal** — default visibility is owner only. Owner can explicitly share `read` or `read+write` with specific users or teams.
+
+**Sharing model:**
+- Permissions are additive — a user's effective access is the union of their personal, team, and global permissions
+- Sharing is done via `resource_permissions` entries that grant `read` or `write` to a user or team on a specific resource
+- A team admin can make a team resource "public to org" (readable by all authenticated users) without moving it to global scope
+
+**Design constraints for MVP code:**
+- The `scope` column on `resources` is nullable — `NULL` means global (current behavior)
+- API paths should accept an optional scope prefix: `/resources/:type/:name` (global) and `/resources/:type/@:scope/:name` (scoped) — only the global form is implemented now
+- Resource slugs remain flat within a scope — `@team/foo` and `@user/foo` can coexist
+- No permission checks in MVP — all resources are globally readable and writable
+
 ### REST API
 
 Base URL: `http://localhost:7420/api/v1`
