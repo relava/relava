@@ -1,5 +1,6 @@
 mod cli;
 mod manifest;
+mod version;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
