@@ -1,5 +1,6 @@
 mod cli;
 mod init;
+mod install;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
@@ -33,12 +34,69 @@ fn main() {
         Command::Install {
             resource_type,
             name,
-            ..
+            version,
+            save: _save,
+            global,
         } => {
-            println!(
-                "relava install {resource_type} {}",
-                name.unwrap_or_default()
-            );
+            let Some(name) = name else {
+                eprintln!("missing resource name. Usage: relava install <type> <name>");
+                std::process::exit(1);
+            };
+
+            let rt = match install::parse_resource_type(&resource_type) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let project_dir = cli
+                .project
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|e| {
+                        eprintln!("cannot determine current directory: {e}");
+                        std::process::exit(1);
+                    })
+                });
+
+            let opts = install::InstallOpts {
+                server_url: &cli.server,
+                resource_type: rt,
+                name: &name,
+                version_pin: version.as_deref(),
+                project_dir: &project_dir,
+                global,
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match install::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&result).unwrap_or_default()
+                        );
+                    }
+                }
+                Err(e) => {
+                    if cli.json {
+                        let err_json = serde_json::json!({
+                            "error": e,
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&err_json).unwrap_or_default()
+                        );
+                    } else {
+                        eprintln!("{e}");
+                    }
+                    std::process::exit(1);
+                }
+            }
         }
         Command::Remove {
             resource_type,
