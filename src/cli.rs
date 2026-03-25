@@ -60,14 +60,6 @@ pub enum Command {
         /// Also remove from relava.toml
         #[arg(long)]
         save: bool,
-
-        /// Force removal even if other resources depend on it
-        #[arg(long)]
-        force: bool,
-
-        /// Remove orphaned transitive dependencies
-        #[arg(long)]
-        prune: bool,
     },
 
     /// List installed resources
