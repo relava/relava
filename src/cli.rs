@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "relava", about = "A local package manager for Claude Code prompt-layer artifacts")]
+#[command(
+    name = "relava",
+    about = "A local package manager for Claude Code prompt-layer artifacts"
+)]
 pub struct Cli {
     /// Override server URL (default: http://localhost:7420)
     #[arg(long, global = true, default_value = "http://localhost:7420")]
@@ -139,7 +142,6 @@ pub enum Command {
         /// Path to resource directory
         path: String,
     },
-
 }
 
 #[derive(Subcommand)]

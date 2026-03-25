@@ -1,9 +1,11 @@
+#![allow(dead_code)]
+
 /// Version constraint and resolution for relava.toml entries.
 ///
 /// Two formats:
-/// - `"X.Y.Z"` — exact version pin
-/// - `"*"` — latest available version
-
+///   - `"X.Y.Z"` — exact version pin
+///   - `"*"` — latest available version
+///
 /// A parsed version constraint from relava.toml.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VersionConstraint {
@@ -107,13 +109,27 @@ mod tests {
     #[test]
     fn parse_valid_version() {
         let v = Version::parse("1.2.3").unwrap();
-        assert_eq!(v, Version { major: 1, minor: 2, patch: 3 });
+        assert_eq!(
+            v,
+            Version {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
+        );
     }
 
     #[test]
     fn parse_zero_version() {
         let v = Version::parse("0.0.0").unwrap();
-        assert_eq!(v, Version { major: 0, minor: 0, patch: 0 });
+        assert_eq!(
+            v,
+            Version {
+                major: 0,
+                minor: 0,
+                patch: 0
+            }
+        );
     }
 
     #[test]
@@ -127,7 +143,11 @@ mod tests {
 
     #[test]
     fn version_display() {
-        let v = Version { major: 1, minor: 2, patch: 3 };
+        let v = Version {
+            major: 1,
+            minor: 2,
+            patch: 3,
+        };
         assert_eq!(v.to_string(), "1.2.3");
     }
 
@@ -145,7 +165,14 @@ mod tests {
     #[test]
     fn constraint_exact() {
         let c = VersionConstraint::parse("1.2.3").unwrap();
-        assert_eq!(c, VersionConstraint::Exact(Version { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            c,
+            VersionConstraint::Exact(Version {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
     }
 
     #[test]
@@ -179,7 +206,10 @@ mod tests {
             Version::parse("2.0.0").unwrap(),
         ];
         let c = VersionConstraint::parse("1.2.0").unwrap();
-        assert_eq!(c.resolve(&available), Err(VersionError::VersionNotFound("1.2.0".to_string())));
+        assert_eq!(
+            c.resolve(&available),
+            Err(VersionError::VersionNotFound("1.2.0".to_string()))
+        );
     }
 
     #[test]

@@ -20,22 +20,40 @@ fn main() {
         Command::Init => {
             println!("relava init — not yet implemented");
         }
-        Command::Install { resource_type, name, .. } => {
-            println!("relava install {resource_type} {}", name.unwrap_or_default());
+        Command::Install {
+            resource_type,
+            name,
+            ..
+        } => {
+            println!(
+                "relava install {resource_type} {}",
+                name.unwrap_or_default()
+            );
         }
-        Command::Remove { resource_type, name, .. } => {
+        Command::Remove {
+            resource_type,
+            name,
+            ..
+        } => {
             println!("relava remove {resource_type} {name}");
         }
         Command::List { resource_type, .. } => {
             println!("relava list {resource_type}");
         }
-        Command::Info { resource_type, name } => {
+        Command::Info {
+            resource_type,
+            name,
+        } => {
             println!("relava info {resource_type} {name}");
         }
         Command::Search { query } => {
             println!("relava search {query}");
         }
-        Command::Update { resource_type, name, all } => {
+        Command::Update {
+            resource_type,
+            name,
+            all,
+        } => {
             if all {
                 println!("relava update --all");
             } else {
@@ -46,10 +64,17 @@ fn main() {
                 );
             }
         }
-        Command::Publish { resource_type, name, .. } => {
+        Command::Publish {
+            resource_type,
+            name,
+            ..
+        } => {
             println!("relava publish {resource_type} {name}");
         }
-        Command::Resolve { resource_type, name } => {
+        Command::Resolve {
+            resource_type,
+            name,
+        } => {
             println!("relava resolve {resource_type} {name}");
         }
         Command::Server { action } => match action {
@@ -66,7 +91,10 @@ fn main() {
         Command::Doctor => {
             println!("relava doctor");
         }
-        Command::Import { resource_type, path } => {
+        Command::Import {
+            resource_type,
+            path,
+        } => {
             println!("relava import {resource_type} {path}");
         }
     }
