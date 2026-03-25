@@ -1115,29 +1115,29 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 ### Must Resolve Before Phase 1
 
-1. **Global vs. project resources**: Claude Code has both global (`~/.claude/skills/`) and project-local (`./skills/`) skill locations. Should `relava install --global` target the global location? How do we handle conflicts?
+1. ~~**Global vs. project resources**~~ **Resolved.** `relava install --global` targets `~/.claude/` (skills → `~/.claude/skills/`, agents → `~/.claude/agents/`, etc.). On conflict, project-local takes precedence (Claude Code's existing behavior). `relava list` shows both scopes with `[global]`/`[local]` labels.
 
-2. **CLAUDE.md management**: Currently, some skills are referenced in `CLAUDE.md`. Should Relava auto-add/remove skill references in CLAUDE.md during install/remove? Or is that the developer's responsibility?
+2. ~~**CLAUDE.md management**~~ **Resolved.** Relava does not touch `CLAUDE.md`. Skills are auto-discovered by Claude Code from `skills/` directories — no CLAUDE.md reference needed. Resource authors document any manual steps in their README. Also resolves #8.
 
-3. **settings.json env injection**: When a resource declares required env vars, should `relava install` offer to add placeholder entries to `.claude/settings.json` `env` field? Or just warn?
+3. ~~**settings.json env injection**~~ **Resolved.** Warn only — Relava never modifies `.claude/settings.json` for env vars. At install time, print required env vars and where to set them. `relava doctor` checks all installed resources and reports any env vars missing from both the process environment and `.claude/settings.json` `env` entries.
 
 ### Must Resolve Before Phase 2
 
-4. **Port selection**: Default port `7420` — is this stable, or should the server find an available port and write it to config?
+4. ~~**Port selection**~~ **Resolved.** Default port `7420`, stable. If occupied, fail with a clear error suggesting `--port` override or `relava server stop`. Active port is written to `~/.relava/config.toml` so the CLI always knows where to connect.
 
-5. **Authentication**: Even for local-only, should the server require a token? Prevents other local processes from modifying resources. Low priority but worth deciding.
+5. ~~**Authentication**~~ **Resolved.** No auth for MVP. Server binds to `127.0.0.1` only (not `0.0.0.0`), limiting access to the local machine. Revisit if/when a cloud registry is introduced.
 
-6. **Concurrency**: Multiple CLI invocations or GUI actions at once — how does the server handle concurrent installs to the same project? SQLite WAL mode + row-level locking in application code?
+6. ~~**Concurrency**~~ **Resolved.** SQLite WAL mode + server-side mutex per project. The server serializes install/remove/update operations per project path using an in-memory lock map. Multiple projects can proceed in parallel. CLI retries with backoff if the server returns 409 Conflict.
 
 ### Design Decisions Deferred
 
-7. **Hook management complexity**: Hooks modify `settings.json` which may have user edits. Merge strategy for JSON modifications needs careful design. Deferred to Phase 4.
+7. **Hook management complexity**: Deferred to Phase 4 implementation. Will decide merge strategy when we have concrete hook install/remove scenarios to test against.
 
-8. **CLAUDE.md skill trigger descriptions**: Claude Code uses skill descriptions in settings.json or CLAUDE.md to decide when to load a skill. Should Relava manage these trigger descriptions? This is an integration point that could add significant value but also complexity.
+8. ~~**CLAUDE.md skill trigger descriptions**~~ **Resolved by #2.** Relava does not manage CLAUDE.md or trigger descriptions.
 
-9. **Migration tooling**: When a resource author changes the directory structure between versions, how does update handle it? Rename detection? Migration scripts in the resource?
+9. ~~**Migration tooling**~~ **Resolved.** No additional migration DSL. The update flow already diffs files (add/remove/overwrite) and `[install]` scripts handle any post-update setup. Resource authors use install scripts for complex migrations.
 
-10. **Resource naming**: Flat namespace (`denden`) or scoped (`@woong/denden`)? Scoped prevents conflicts but adds complexity. Currently flat with slug validation (1-64 chars, lowercase alphanumeric + hyphens) — revisit scoping if the registry grows.
+10. ~~**Resource naming**~~ **Resolved.** Flat namespace with slug validation (1-64 chars, lowercase alphanumeric + hyphens). Scoped namespaces (`@org/name`) deferred to when/if a cloud registry is introduced.
 
 ---
 
