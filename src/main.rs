@@ -1,5 +1,6 @@
 mod cli;
 mod manifest;
+mod store;
 mod validate;
 mod version;
 
