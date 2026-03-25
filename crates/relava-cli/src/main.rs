@@ -5,6 +5,17 @@ mod install;
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
 
+/// Resolve the project directory from `--project` flag or current working directory.
+fn resolve_project_dir(project_flag: Option<&str>) -> std::path::PathBuf {
+    match project_flag {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("cannot determine current directory: {e}");
+            std::process::exit(1);
+        }),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -17,15 +28,7 @@ fn main() {
 
     match cli.command {
         Command::Init => {
-            let project_dir = cli
-                .project
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|e| {
-                        eprintln!("cannot determine current directory: {e}");
-                        std::process::exit(1);
-                    })
-                });
+            let project_dir = resolve_project_dir(cli.project.as_deref());
             if let Err(msg) = init::run(&project_dir) {
                 eprintln!("{msg}");
                 std::process::exit(1);
@@ -51,16 +54,7 @@ fn main() {
                 }
             };
 
-            let project_dir = cli
-                .project
-                .as_deref()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|e| {
-                        eprintln!("cannot determine current directory: {e}");
-                        std::process::exit(1);
-                    })
-                });
+            let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = install::InstallOpts {
                 server_url: &cli.server,

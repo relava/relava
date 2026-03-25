@@ -89,7 +89,21 @@ impl RegistryClient {
         }
     }
 
+    /// Send a GET request, mapping connection errors to `ServerUnreachable`.
+    fn send_get(&self, url: &str) -> Result<reqwest::blocking::Response, RegistryError> {
+        self.client.get(url).send().map_err(|e| {
+            if e.is_connect() {
+                RegistryError::ServerUnreachable(self.base_url.clone())
+            } else {
+                RegistryError::Http(e.to_string())
+            }
+        })
+    }
+
     /// Check that the server is reachable.
+    ///
+    /// Unlike other methods, any send failure (not just connection errors)
+    /// is treated as "server unreachable" — this is intentional for health checks.
     pub fn health_check(&self) -> Result<(), RegistryError> {
         let url = format!("{}/api/v1/health", self.base_url);
         self.client
@@ -110,13 +124,7 @@ impl RegistryClient {
             self.base_url, resource_type, name
         );
 
-        let response = self.client.get(&url).send().map_err(|e| {
-            if e.is_connect() {
-                RegistryError::ServerUnreachable(self.base_url.clone())
-            } else {
-                RegistryError::Http(e.to_string())
-            }
-        })?;
+        let response = self.send_get(&url)?;
 
         if response.status().as_u16() == 404 {
             return Err(RegistryError::ResourceNotFound {
@@ -136,12 +144,10 @@ impl RegistryClient {
             .json()
             .map_err(|e| RegistryError::Http(e.to_string()))?;
 
-        let mut versions = Vec::new();
-        for entry in &body.versions {
-            let v = Version::parse(&entry.version).map_err(RegistryError::VersionResolution)?;
-            versions.push(v);
-        }
-        Ok(versions)
+        body.versions
+            .iter()
+            .map(|entry| Version::parse(&entry.version).map_err(RegistryError::VersionResolution))
+            .collect()
     }
 
     /// Resolve a version constraint against the registry.
@@ -181,13 +187,7 @@ impl RegistryClient {
             self.base_url, resource_type, name, version
         );
 
-        let response = self.client.get(&url).send().map_err(|e| {
-            if e.is_connect() {
-                RegistryError::ServerUnreachable(self.base_url.clone())
-            } else {
-                RegistryError::Http(e.to_string())
-            }
-        })?;
+        let response = self.send_get(&url)?;
 
         if response.status().as_u16() == 404 {
             return Err(RegistryError::VersionNotFound {

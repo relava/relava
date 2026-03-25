@@ -122,11 +122,12 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
 
 /// The primary file name for display purposes.
 fn primary_file(resource_type: ResourceType, name: &str) -> String {
+    let agent_type = AgentType::Claude;
     match resource_type {
-        ResourceType::Skill => format!(".claude/skills/{}/SKILL.md", name),
-        ResourceType::Agent => format!(".claude/agents/{}.md", name),
-        ResourceType::Command => format!(".claude/commands/{}.md", name),
-        ResourceType::Rule => format!(".claude/rules/{}.md", name),
+        ResourceType::Skill => format!("{}/{}/SKILL.md", agent_type.skills_dir(), name),
+        ResourceType::Agent => format!("{}/{name}.md", agent_type.agents_dir()),
+        ResourceType::Command => format!("{}/{name}.md", agent_type.commands_dir()),
+        ResourceType::Rule => format!("{}/{name}.md", agent_type.rules_dir()),
     }
 }
 
@@ -145,17 +146,25 @@ fn write_to_project(
         .list_files(resource_type, name, version)
         .map_err(|e| e.to_string())?;
 
+    // Skills install into a named subdirectory; other types into a flat type directory
     let install_dir = match resource_type {
-        ResourceType::Skill => {
-            let dir = project_root.join(agent_type.skills_dir()).join(name);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("failed to create {}: {}", dir.display(), e))?;
+        ResourceType::Skill => project_root.join(agent_type.skills_dir()).join(name),
+        ResourceType::Agent => project_root.join(agent_type.agents_dir()),
+        ResourceType::Command => project_root.join(agent_type.commands_dir()),
+        ResourceType::Rule => project_root.join(agent_type.rules_dir()),
+    };
 
+    std::fs::create_dir_all(&install_dir)
+        .map_err(|e| format!("failed to create {}: {}", install_dir.display(), e))?;
+
+    match resource_type {
+        ResourceType::Skill => {
+            // Multi-file resource: copy all files preserving directory structure
             for file_path in &file_paths {
                 let content = cache
                     .read_file(resource_type, name, version, file_path)
                     .map_err(|e| e.to_string())?;
-                let dest = dir.join(file_path);
+                let dest = install_dir.join(file_path);
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
@@ -163,33 +172,19 @@ fn write_to_project(
                 std::fs::write(&dest, &content)
                     .map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
             }
-            dir
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
-            let type_dir = match resource_type {
-                ResourceType::Agent => agent_type.agents_dir(),
-                ResourceType::Command => agent_type.commands_dir(),
-                ResourceType::Rule => agent_type.rules_dir(),
-                _ => unreachable!(),
-            };
-            let dir = project_root.join(type_dir);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("failed to create {}: {}", dir.display(), e))?;
-
-            // Single-file resources: the download should contain one .md file.
-            // Write it as <name>.md in the type directory.
-            let md_file = format!("{name}.md");
+            // Single-file resource: write as <name>.md
             if let Some(source_path) = file_paths.first() {
                 let content = cache
                     .read_file(resource_type, name, version, source_path)
                     .map_err(|e| e.to_string())?;
-                let dest = dir.join(&md_file);
+                let dest = install_dir.join(format!("{name}.md"));
                 std::fs::write(&dest, &content)
                     .map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
             }
-            dir
         }
-    };
+    }
 
     Ok(install_dir)
 }
