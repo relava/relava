@@ -56,10 +56,10 @@ Relava solves this by providing:
 |  |  (managed by CLI, not by server)                   ||
 |  |                                                    ||
 |  |  .claude/                                          ||
+|  |    skills/        <-- skill directories            ||
 |  |    agents/        <-- agent .md files              ||
 |  |    commands/       <-- command .md files            ||
 |  |    rules/          <-- rule .md files              ||
-|  |  skills/           <-- skill directories           ||
 |  |  relava.toml       <-- project resource declarations ||
 |  +---------------------------------------------------+|
 |                                                       |
@@ -370,20 +370,20 @@ Install a resource into the current project.
 # Install a skill (downloads to project only)
 $ relava install skill denden
 Installing skill denden@1.2.0...
-  [skill]   skills/denden/SKILL.md + 3 files
+  [skill]   .claude/skills/denden/SKILL.md + 3 files
 Installed skill denden@1.2.0
 
 # Install and save to relava.toml
 $ relava install skill notify-slack --save
 Installing skill notify-slack@0.3.0...
-  [skill]   skills/notify-slack/SKILL.md
+  [skill]   .claude/skills/notify-slack/SKILL.md
 Installed skill notify-slack@0.3.0
 Saved to relava.toml
 
 # Install a specific version
 $ relava install skill notify-slack --version 0.2.0 --save
 Installing skill notify-slack@0.2.0...
-  [skill]   skills/notify-slack/SKILL.md
+  [skill]   .claude/skills/notify-slack/SKILL.md
 Installed skill notify-slack@0.2.0
 Saved to relava.toml
 
@@ -437,12 +437,12 @@ This is analogous to `npm install` with no arguments — it reads the manifest a
 ```bash
 $ relava remove skill denden
 Removing skill denden@1.2.0...
-  Removed skills/denden/ (4 files)
+  Removed .claude/skills/denden/ (4 files)
 Removed skill denden.
 
 $ relava remove skill denden --save
 Removing skill denden@1.2.0...
-  Removed skills/denden/ (4 files)
+  Removed .claude/skills/denden/ (4 files)
 Removed skill denden.
 Removed from relava.toml
 ```
@@ -499,8 +499,8 @@ Size:        12 KB
 ```bash
 $ relava update skill denden
 Updating skill denden 1.0.0 -> 1.2.0...
-  Updated skills/denden/SKILL.md
-  Updated skills/denden/bin/denden
+  Updated .claude/skills/denden/SKILL.md
+  Updated .claude/skills/denden/lib/helpers.md
 Updated skill denden to 1.2.0.
 
 $ relava update --all
@@ -518,7 +518,7 @@ Publish a resource to the local Relava registry server.
 ```bash
 $ relava publish skill denden
 Publishing skill denden@1.2.0 to local registry...
-  Uploading skills/denden/ (5 files, 4.2 MB)
+  Uploading .claude/skills/denden/ (5 files, 4.2 MB)
 Published skill denden@1.2.0
 
 $ relava publish skill my-skill --path ./my-custom-skill/
@@ -537,7 +537,7 @@ What it does:
 7. The server parses the multipart payload, validates server-side, and stores files in `~/.relava/store/<type>/<name>/<version>/`
 8. If no version is specified and a prior version exists, the patch version is auto-incremented
 
-By default, publishes from the standard location for the resource type (e.g., `skills/<name>/` for skills). Use `--path` to specify a custom source directory.
+By default, publishes from the standard location for the resource type (e.g., `.claude/skills/<name>/` for skills). Use `--path` to specify a custom source directory.
 
 ### Publish Validation
 
@@ -589,7 +589,7 @@ Checking Relava installation...
 Import an existing resource directory into the local registry.
 
 ```bash
-$ relava import skill ./skills/denden
+$ relava import skill ./.claude/skills/denden
 Detected: 1 skill (denden)
 Published skill denden@0.1.0 to local registry.
 ```
@@ -639,10 +639,9 @@ All installs download resource files via HTTP from the server (`GET /api/v1/reso
 #### Skills
 
 1. Download skill files from server via HTTP
-2. Create `skills/<skill-name>/` in project root
+2. Create `.claude/skills/<skill-name>/` in project
 3. Write `SKILL.md` and all support files into it
-4. Skill is automatically discoverable by Claude Code (Claude reads `skills/` directories)
-5. Record all written file paths in `installations.installed_files_json`
+4. Skill is automatically discoverable by Claude Code
 
 #### Agents
 
@@ -940,7 +939,7 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 1. ~~**Global vs. project resources**~~ **Resolved.** `relava install --global` targets `~/.claude/` (skills → `~/.claude/skills/`, agents → `~/.claude/agents/`, etc.). On conflict, project-local takes precedence (Claude Code's existing behavior). `relava list` shows both scopes with `[global]`/`[local]` labels.
 
-2. ~~**CLAUDE.md management**~~ **Resolved.** Relava does not touch `CLAUDE.md`. Skills are auto-discovered by Claude Code from `skills/` directories — no CLAUDE.md reference needed. Resource authors document any manual steps in their README. Also resolves #8.
+2. ~~**CLAUDE.md management**~~ **Resolved.** Relava does not touch `CLAUDE.md`. Skills are auto-discovered by Claude Code from `.claude/skills/` directories — no CLAUDE.md reference needed. Resource authors document any manual steps in their README. Also resolves #8.
 
 3. ~~**settings.json env injection**~~ **Resolved.** Warn only — Relava never modifies `.claude/settings.json` for env vars. At install time, print required env vars and where to set them. `relava doctor` checks all installed resources and reports any env vars missing from both the process environment and `.claude/settings.json` `env` entries.
 
@@ -987,7 +986,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 8. `relava init` — create empty project `relava.toml`
 - ⬜ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations — *depends on 6, 7, 3a*
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
-- ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `skills/<name>/`, handle multi-file directories
+- ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `.claude/skills/<name>/`, handle multi-file directories
 - ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
 - ⬜ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
 - ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
@@ -1079,7 +1078,7 @@ No week assignments — each feature is an independent work item.
 
 | Resource | Location | Discovery |
 |----------|----------|-----------|
-| Skills | `./skills/<name>/SKILL.md` or `~/.claude/skills/<name>/SKILL.md` | Auto-discovered by Claude Code |
+| Skills | `./.claude/skills/<name>/SKILL.md` or `~/.claude/skills/<name>/SKILL.md` | Auto-discovered by Claude Code |
 | Agents | `.claude/agents/<name>.md` | Available via `/agents` command |
 | Commands | `.claude/commands/<name>.md` | Available via `/<name>` command |
 | Rules | `.claude/rules/<name>.md` | Auto-loaded into every conversation |
@@ -1093,7 +1092,7 @@ No week assignments — each feature is an independent work item.
 |---------|-----|------|--------|
 | Package format | package.json + node_modules | Formula (Ruby DSL) | .md frontmatter + directory |
 | Registry | npmjs.com | Homebrew/core | Local server |
-| Install target | node_modules/ | /usr/local/ | .claude/ + skills/ |
+| Install target | node_modules/ | /usr/local/ | .claude/ |
 | GUI | npmjs.com (web) | None | Built-in local web GUI |
 | Manifest | package.json | Brewfile | relava.toml |
 | Scope | JS packages | System software | Claude Code artifacts |
