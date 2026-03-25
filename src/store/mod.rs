@@ -1,3 +1,4 @@
+// TODO: remove these allows once the store module is wired into the CLI
 #![allow(dead_code)]
 #![allow(unused_imports)]
 

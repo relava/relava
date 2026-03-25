@@ -1,8 +1,37 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 use std::path::Path;
 
 use super::models::{Resource, Version};
 use super::traits::{ResourceStore, StoreError};
+use crate::validate::ResourceType;
+
+/// Map a row from the standard 8-column resource SELECT into a `Resource`.
+fn resource_from_row(row: &Row<'_>) -> rusqlite::Result<Resource> {
+    Ok(Resource {
+        id: row.get(0)?,
+        scope: row.get(1)?,
+        name: row.get(2)?,
+        resource_type: row.get(3)?,
+        description: row.get(4)?,
+        latest_version: row.get(5)?,
+        metadata_json: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+/// Map a row from the standard 8-column version SELECT into a `Version`.
+fn version_from_row(row: &Row<'_>) -> rusqlite::Result<Version> {
+    Ok(Version {
+        id: row.get(0)?,
+        resource_id: row.get(1)?,
+        version: row.get(2)?,
+        store_path: row.get(3)?,
+        checksum: row.get(4)?,
+        manifest_json: row.get(5)?,
+        published_by: row.get(6)?,
+        published_at: row.get(7)?,
+    })
+}
 
 /// Current schema version. Increment when adding migrations.
 const SCHEMA_VERSION: i64 = 1;
@@ -16,7 +45,7 @@ impl SqliteResourceStore {
     /// Open (or create) a SQLite database at `path` and run migrations.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)
-            .map_err(|e| StoreError::Io(format!("failed to open database: {e}")))?;
+            .map_err(|e| StoreError::Database(format!("failed to open database: {e}")))?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -26,7 +55,7 @@ impl SqliteResourceStore {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()
-            .map_err(|e| StoreError::Io(format!("failed to open in-memory database: {e}")))?;
+            .map_err(|e| StoreError::Database(format!("failed to open in-memory database: {e}")))?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -36,7 +65,7 @@ impl SqliteResourceStore {
     fn migrate(&self) -> Result<(), StoreError> {
         self.conn
             .execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
-            .map_err(|e| StoreError::Io(format!("failed to create schema_version table: {e}")))?;
+            .map_err(|e| StoreError::Database(format!("failed to create schema_version table: {e}")))?;
 
         let current: i64 = self
             .conn
@@ -45,7 +74,7 @@ impl SqliteResourceStore {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| StoreError::Io(format!("failed to read schema version: {e}")))?;
+            .map_err(|e| StoreError::Database(format!("failed to read schema version: {e}")))?;
 
         if current < 1 {
             self.migrate_v1()?;
@@ -60,7 +89,7 @@ impl SqliteResourceStore {
                     "INSERT INTO schema_version (version) VALUES (?1)",
                     [SCHEMA_VERSION],
                 )
-                .map_err(|e| StoreError::Io(format!("failed to update schema version: {e}")))?;
+                .map_err(|e| StoreError::Database(format!("failed to update schema version: {e}")))?;
         }
 
         Ok(())
@@ -93,7 +122,7 @@ impl SqliteResourceStore {
                     UNIQUE(resource_id, version)
                 );",
             )
-            .map_err(|e| StoreError::Io(format!("migration v1 failed: {e}")))?;
+            .map_err(|e| StoreError::Database(format!("migration v1 failed: {e}")))?;
         Ok(())
     }
 }
@@ -103,8 +132,9 @@ impl ResourceStore for SqliteResourceStore {
         &self,
         scope: Option<&str>,
         name: &str,
-        resource_type: &str,
+        resource_type: ResourceType,
     ) -> Result<Resource, StoreError> {
+        let rt = resource_type.to_string();
         let mut stmt = self
             .conn
             .prepare(
@@ -112,26 +142,15 @@ impl ResourceStore for SqliteResourceStore {
                  FROM resources
                  WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
             )
-            .map_err(|e| StoreError::Io(e.to_string()))?;
+            .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        stmt.query_row((scope, name, resource_type), |row| {
-            Ok(Resource {
-                id: row.get(0)?,
-                scope: row.get(1)?,
-                name: row.get(2)?,
-                resource_type: row.get(3)?,
-                description: row.get(4)?,
-                latest_version: row.get(5)?,
-                metadata_json: row.get(6)?,
-                updated_at: row.get(7)?,
+        stmt.query_row((scope, name, &rt), resource_from_row)
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound(format!(
+                    "{resource_type} '{name}' not found"
+                )),
+                _ => StoreError::Database(e.to_string()),
             })
-        })
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound(format!(
-                "{resource_type} '{name}' not found"
-            )),
-            _ => StoreError::Io(e.to_string()),
-        })
     }
 
     fn list_versions(&self, resource_id: i64) -> Result<Vec<Version>, StoreError> {
@@ -143,25 +162,14 @@ impl ResourceStore for SqliteResourceStore {
                  WHERE resource_id = ?1
                  ORDER BY published_at DESC",
             )
-            .map_err(|e| StoreError::Io(e.to_string()))?;
+            .map_err(|e| StoreError::Database(e.to_string()))?;
 
         let rows = stmt
-            .query_map([resource_id], |row| {
-                Ok(Version {
-                    id: row.get(0)?,
-                    resource_id: row.get(1)?,
-                    version: row.get(2)?,
-                    store_path: row.get(3)?,
-                    checksum: row.get(4)?,
-                    manifest_json: row.get(5)?,
-                    published_by: row.get(6)?,
-                    published_at: row.get(7)?,
-                })
-            })
-            .map_err(|e| StoreError::Io(e.to_string()))?;
+            .query_map([resource_id], version_from_row)
+            .map_err(|e| StoreError::Database(e.to_string()))?;
 
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StoreError::Io(e.to_string()))
+            .map_err(|e| StoreError::Database(e.to_string()))
     }
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError> {
@@ -187,7 +195,7 @@ impl ResourceStore for SqliteResourceStore {
                         id,
                     ),
                 )
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .map_err(|e| StoreError::Database(e.to_string()))?;
             id
         } else {
             // Insert new resource.
@@ -204,11 +212,11 @@ impl ResourceStore for SqliteResourceStore {
                         &resource.metadata_json,
                     ),
                 )
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .map_err(|e| StoreError::Database(e.to_string()))?;
             self.conn.last_insert_rowid()
         };
 
-        // Insert the version row.
+        // Insert the version row — fail on duplicate (resource_id, version).
         self.conn
             .execute(
                 "INSERT INTO versions (resource_id, version, store_path, checksum, manifest_json, published_by, published_at)
@@ -222,15 +230,17 @@ impl ResourceStore for SqliteResourceStore {
                     &version.published_by,
                 ),
             )
-            .map_err(|e| {
-                if e.to_string().contains("UNIQUE constraint failed") {
+            .map_err(|e| match e {
+                // Fix #4: Match on ErrorCode instead of string-matching error messages.
+                rusqlite::Error::SqliteFailure(err, _)
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
                     StoreError::AlreadyExists(format!(
                         "version {} already exists for {}",
                         version.version, resource.name
                     ))
-                } else {
-                    StoreError::Io(e.to_string())
                 }
+                _ => StoreError::Database(e.to_string()),
             })?;
 
         Ok(())
@@ -239,13 +249,14 @@ impl ResourceStore for SqliteResourceStore {
     fn search(
         &self,
         query: &str,
-        resource_type: Option<&str>,
+        resource_type: Option<ResourceType>,
     ) -> Result<Vec<Resource>, StoreError> {
         let pattern = format!("%{query}%");
 
-        let mut results = Vec::new();
-
+        // Fix #1: Both branches use fully parameterized queries — no string
+        // interpolation of user-supplied values into SQL.
         if let Some(rt) = resource_type {
+            let rt_str = rt.to_string();
             let mut stmt = self
                 .conn
                 .prepare(
@@ -254,26 +265,14 @@ impl ResourceStore for SqliteResourceStore {
                      WHERE (name LIKE ?1 OR description LIKE ?1) AND type = ?2
                      ORDER BY name",
                 )
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
             let rows = stmt
-                .query_map((&pattern, rt), |row| {
-                    Ok(Resource {
-                        id: row.get(0)?,
-                        scope: row.get(1)?,
-                        name: row.get(2)?,
-                        resource_type: row.get(3)?,
-                        description: row.get(4)?,
-                        latest_version: row.get(5)?,
-                        metadata_json: row.get(6)?,
-                        updated_at: row.get(7)?,
-                    })
-                })
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .query_map((&pattern, &rt_str), resource_from_row)
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
-            for row in rows {
-                results.push(row.map_err(|e| StoreError::Io(e.to_string()))?);
-            }
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| StoreError::Database(e.to_string()))
         } else {
             let mut stmt = self
                 .conn
@@ -283,29 +282,15 @@ impl ResourceStore for SqliteResourceStore {
                      WHERE (name LIKE ?1 OR description LIKE ?1)
                      ORDER BY name",
                 )
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
             let rows = stmt
-                .query_map([&pattern], |row| {
-                    Ok(Resource {
-                        id: row.get(0)?,
-                        scope: row.get(1)?,
-                        name: row.get(2)?,
-                        resource_type: row.get(3)?,
-                        description: row.get(4)?,
-                        latest_version: row.get(5)?,
-                        metadata_json: row.get(6)?,
-                        updated_at: row.get(7)?,
-                    })
-                })
-                .map_err(|e| StoreError::Io(e.to_string()))?;
+                .query_map([&pattern], resource_from_row)
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
-            for row in rows {
-                results.push(row.map_err(|e| StoreError::Io(e.to_string()))?);
-            }
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| StoreError::Database(e.to_string()))
         }
-
-        Ok(results)
     }
 }
 
@@ -383,7 +368,7 @@ mod tests {
 
         store.publish(&resource, &version).unwrap();
 
-        let found = store.get_resource(None, "denden", "skill").unwrap();
+        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
         assert_eq!(found.name, "denden");
         assert_eq!(found.resource_type, "skill");
         assert_eq!(found.latest_version.as_deref(), Some("1.0.0"));
@@ -397,7 +382,7 @@ mod tests {
         store.publish(&resource, &sample_version("1.0.0")).unwrap();
         store.publish(&resource, &sample_version("1.1.0")).unwrap();
 
-        let found = store.get_resource(None, "denden", "skill").unwrap();
+        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
         assert_eq!(found.latest_version.as_deref(), Some("1.1.0"));
     }
 
@@ -409,7 +394,7 @@ mod tests {
         store.publish(&resource, &sample_version("1.0.0")).unwrap();
         store.publish(&resource, &sample_version("1.1.0")).unwrap();
 
-        let found = store.get_resource(None, "denden", "skill").unwrap();
+        let found = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
         let versions = store.list_versions(found.id).unwrap();
         assert_eq!(versions.len(), 2);
     }
@@ -417,7 +402,7 @@ mod tests {
     #[test]
     fn get_resource_not_found() {
         let store = test_store();
-        let result = store.get_resource(None, "nonexistent", "skill");
+        let result = store.get_resource(None, "nonexistent", ResourceType::Skill);
         assert!(matches!(result, Err(StoreError::NotFound(_))));
     }
 
@@ -451,10 +436,10 @@ mod tests {
             .publish(&sample_resource(), &sample_version("1.0.0"))
             .unwrap();
 
-        let results = store.search("den", Some("agent")).unwrap();
+        let results = store.search("den", Some(ResourceType::Agent)).unwrap();
         assert!(results.is_empty());
 
-        let results = store.search("den", Some("skill")).unwrap();
+        let results = store.search("den", Some(ResourceType::Skill)).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -475,11 +460,11 @@ mod tests {
         store.publish(&global, &sample_version("1.0.0")).unwrap();
         store.publish(&scoped, &sample_version("2.0.0")).unwrap();
 
-        let g = store.get_resource(None, "denden", "skill").unwrap();
+        let g = store.get_resource(None, "denden", ResourceType::Skill).unwrap();
         assert_eq!(g.latest_version.as_deref(), Some("1.0.0"));
 
         let s = store
-            .get_resource(Some("myteam"), "denden", "skill")
+            .get_resource(Some("myteam"), "denden", ResourceType::Skill)
             .unwrap();
         assert_eq!(s.latest_version.as_deref(), Some("2.0.0"));
     }

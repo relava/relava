@@ -25,11 +25,9 @@ impl BlobStore for LocalBlobStore {
     fn store(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
         let full = self.resolve(path);
         if let Some(parent) = full.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| StoreError::Io(format!("failed to create directory: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(StoreError::Io)?;
         }
-        std::fs::write(&full, data)
-            .map_err(|e| StoreError::Io(format!("failed to write {}: {e}", full.display())))
+        std::fs::write(&full, data).map_err(StoreError::Io)
     }
 
     fn fetch(&self, path: &str) -> Result<Vec<u8>, StoreError> {
@@ -38,18 +36,16 @@ impl BlobStore for LocalBlobStore {
             std::io::ErrorKind::NotFound => {
                 StoreError::NotFound(format!("blob not found: {path}"))
             }
-            _ => StoreError::Io(format!("failed to read {}: {e}", full.display())),
+            _ => StoreError::Io(e),
         })
     }
 
     fn delete(&self, path: &str) -> Result<(), StoreError> {
         let full = self.resolve(path);
         if full.is_dir() {
-            std::fs::remove_dir_all(&full)
-                .map_err(|e| StoreError::Io(format!("failed to delete {}: {e}", full.display())))
+            std::fs::remove_dir_all(&full).map_err(StoreError::Io)
         } else if full.exists() {
-            std::fs::remove_file(&full)
-                .map_err(|e| StoreError::Io(format!("failed to delete {}: {e}", full.display())))
+            std::fs::remove_file(&full).map_err(StoreError::Io)
         } else {
             Ok(()) // already gone
         }
