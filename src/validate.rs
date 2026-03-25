@@ -74,6 +74,24 @@ impl ResourceType {
             _ => Err(ValidationError::InvalidResourceType(s.to_string())),
         }
     }
+
+    /// Returns the plural directory name used in the store (e.g. "skills").
+    pub fn store_dir_name(&self) -> &str {
+        match self {
+            Self::Skill => "skills",
+            Self::Agent => "agents",
+            Self::Command => "commands",
+            Self::Rule => "rules",
+        }
+    }
+
+    /// All resource types.
+    pub const ALL: [ResourceType; 4] = [
+        ResourceType::Skill,
+        ResourceType::Agent,
+        ResourceType::Command,
+        ResourceType::Rule,
+    ];
 }
 
 impl std::fmt::Display for ResourceType {
