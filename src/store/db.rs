@@ -1,9 +1,15 @@
+use rusqlite::types::ToSql;
 use rusqlite::{Connection, Row};
 use std::path::Path;
 
 use super::models::{Resource, Version};
 use super::traits::{ResourceStore, StoreError};
 use crate::validate::ResourceType;
+
+/// Shorthand: convert a `rusqlite::Error` into `StoreError::Database`.
+fn db_err(e: rusqlite::Error) -> StoreError {
+    StoreError::Database(e.to_string())
+}
 
 /// Map a row from the standard 8-column resource SELECT into a `Resource`.
 fn resource_from_row(row: &Row<'_>) -> rusqlite::Result<Resource> {
@@ -95,6 +101,17 @@ impl SqliteResourceStore {
         Ok(())
     }
 
+    /// Prepare, execute, and collect a resource query into a `Vec<Resource>`.
+    fn query_resources(
+        &self,
+        sql: &str,
+        params: &[&dyn ToSql],
+    ) -> Result<Vec<Resource>, StoreError> {
+        let mut stmt = self.conn.prepare(sql).map_err(db_err)?;
+        let rows = stmt.query_map(params, resource_from_row).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
     fn migrate_v1(&self) -> Result<(), StoreError> {
         self.conn
             .execute_batch(
@@ -142,14 +159,14 @@ impl ResourceStore for SqliteResourceStore {
                  FROM resources
                  WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
             )
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         stmt.query_row((scope, name, &rt), resource_from_row)
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound(format!(
                     "{resource_type} '{name}' not found"
                 )),
-                _ => StoreError::Database(e.to_string()),
+                other => db_err(other),
             })
     }
 
@@ -162,14 +179,14 @@ impl ResourceStore for SqliteResourceStore {
                  WHERE resource_id = ?1
                  ORDER BY published_at DESC",
             )
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let rows = stmt
             .query_map([resource_id], version_from_row)
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(db_err)
     }
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError> {
@@ -195,7 +212,7 @@ impl ResourceStore for SqliteResourceStore {
                         id,
                     ),
                 )
-                .map_err(|e| StoreError::Database(e.to_string()))?;
+                .map_err(db_err)?;
             id
         } else {
             // Insert new resource.
@@ -212,7 +229,7 @@ impl ResourceStore for SqliteResourceStore {
                         &resource.metadata_json,
                     ),
                 )
-                .map_err(|e| StoreError::Database(e.to_string()))?;
+                .map_err(db_err)?;
             self.conn.last_insert_rowid()
         };
 
@@ -231,7 +248,6 @@ impl ResourceStore for SqliteResourceStore {
                 ),
             )
             .map_err(|e| match e {
-                // Fix #4: Match on ErrorCode instead of string-matching error messages.
                 rusqlite::Error::SqliteFailure(err, _)
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
@@ -240,7 +256,7 @@ impl ResourceStore for SqliteResourceStore {
                         version.version, resource.name
                     ))
                 }
-                _ => StoreError::Database(e.to_string()),
+                other => db_err(other),
             })?;
 
         Ok(())
@@ -253,43 +269,23 @@ impl ResourceStore for SqliteResourceStore {
     ) -> Result<Vec<Resource>, StoreError> {
         let pattern = format!("%{query}%");
 
-        // Fix #1: Both branches use fully parameterized queries — no string
-        // interpolation of user-supplied values into SQL.
         if let Some(rt) = resource_type {
             let rt_str = rt.to_string();
-            let mut stmt = self
-                .conn
-                .prepare(
-                    "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
-                     FROM resources
-                     WHERE (name LIKE ?1 OR description LIKE ?1) AND type = ?2
-                     ORDER BY name",
-                )
-                .map_err(|e| StoreError::Database(e.to_string()))?;
-
-            let rows = stmt
-                .query_map((&pattern, &rt_str), resource_from_row)
-                .map_err(|e| StoreError::Database(e.to_string()))?;
-
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| StoreError::Database(e.to_string()))
+            self.query_resources(
+                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
+                 FROM resources
+                 WHERE (name LIKE ?1 OR description LIKE ?1) AND type = ?2
+                 ORDER BY name",
+                &[&pattern as &dyn ToSql, &rt_str],
+            )
         } else {
-            let mut stmt = self
-                .conn
-                .prepare(
-                    "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
-                     FROM resources
-                     WHERE (name LIKE ?1 OR description LIKE ?1)
-                     ORDER BY name",
-                )
-                .map_err(|e| StoreError::Database(e.to_string()))?;
-
-            let rows = stmt
-                .query_map([&pattern], resource_from_row)
-                .map_err(|e| StoreError::Database(e.to_string()))?;
-
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| StoreError::Database(e.to_string()))
+            self.query_resources(
+                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
+                 FROM resources
+                 WHERE (name LIKE ?1 OR description LIKE ?1)
+                 ORDER BY name",
+                &[&pattern as &dyn ToSql],
+            )
         }
     }
 }
