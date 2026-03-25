@@ -1,5 +1,6 @@
 mod cli;
 mod manifest;
+mod validate;
 mod version;
 
 use clap::Parser;
