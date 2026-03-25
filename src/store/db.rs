@@ -190,15 +190,17 @@ impl ResourceStore for SqliteResourceStore {
     }
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError> {
-        // Check if the resource already exists.
-        let existing_id: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM resources WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
-                (&resource.scope, &resource.name, &resource.resource_type),
-                |row| row.get(0),
-            )
-            .ok();
+        // Check if the resource already exists. Propagate real DB errors
+        // (locked, corrupt, etc.) — only treat "no rows" as absence.
+        let existing_id: Option<i64> = match self.conn.query_row(
+            "SELECT id FROM resources WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
+            (&resource.scope, &resource.name, &resource.resource_type),
+            |row| row.get(0),
+        ) {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(db_err(e)),
+        };
 
         let resource_id = if let Some(id) = existing_id {
             // Update existing resource.
