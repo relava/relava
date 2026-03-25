@@ -60,7 +60,7 @@ Relava solves this by providing:
 |  |    rules/          <-- rule .md files              ||
 |  |    settings.json   <-- hooks, env, permissions     ||
 |  |  skills/           <-- skill directories           ||
-|  |  relava.toml       <-- resource declarations       ||
+|  |  relava.toml       <-- project resource declarations ||
 |  |  CLAUDE.md         <-- skill references            ||
 |  +---------------------------------------------------+|
 |                                                       |
@@ -151,45 +151,38 @@ Resource names (slugs) must follow a strict format to ensure URL-safety and cros
 Valid: `denden`, `notify-slack`, `code-review`, `my-skill-v2`
 Invalid: `-denden`, `Notify_Slack`, `code--review`, `my.skill`
 
-Slug validation is enforced on both `relava publish` (client + server) and when parsing `relava.toml` manifests.
+Slug validation is enforced on `relava publish` (client + server), when parsing project `relava.toml`, and when parsing `metadata.relava` frontmatter.
 
 ### Resource Directory Structures
 
-Each resource type has its own directory layout:
+Each resource type has its own layout. Dependencies are declared in `metadata.relava` frontmatter — no per-resource `relava.toml`.
 
-**Skill** (multi-file):
+**Skill** (multi-file directory):
 ```
 denden/
-  relava.toml              # Resource manifest (required)
-  SKILL.md                 # Skill definition (required)
+  SKILL.md                 # Skill definition with frontmatter (required)
   README.md                # Documentation (recommended)
   templates/               # Support files
   lib/                     # Additional code/data
-  bin/                     # Platform-specific binaries
-    denden-darwin-arm64
-    denden-linux-x64
 ```
 
-**Agent** (single-file + manifest):
+**Agent** (single `.md` file):
 ```
-debugger/
-  relava.toml              # Resource manifest (required)
-  debugger.md              # Agent definition
+orchestrator.md            # Agent definition with frontmatter
 ```
+Installed to `.claude/agents/orchestrator.md`. Dependencies on skills and other agents declared in frontmatter.
 
-**Command** (single-file + manifest):
+**Command** (single `.md` file):
 ```
-commit/
-  relava.toml              # Resource manifest (required)
-  commit.md                # Command definition
+commit.md                  # Command definition
 ```
+Installed to `.claude/commands/commit.md`.
 
-**Rule** (single-file + manifest):
+**Rule** (single `.md` file):
 ```
-no-console-log/
-  relava.toml              # Resource manifest (required)
-  no-console-log.md        # Rule definition
+no-console-log.md          # Rule definition
 ```
+Installed to `.claude/rules/no-console-log.md`.
 
 ### Versioning
 
@@ -254,17 +247,14 @@ The Relava server is a local registry that stores published resources and serves
     skills/
       denden/
         1.0.0/         # Version directory
-          relava.toml
           SKILL.md
-          bin/...
+          templates/...
         1.2.0/
-          relava.toml
           SKILL.md
-          bin/...
+          templates/...
     agents/
       debugger/
         0.5.0/
-          relava.toml
           debugger.md
   cache/               # Temporary cache
   logs/                # Server logs
@@ -293,7 +283,7 @@ CREATE TABLE versions (
   version       TEXT NOT NULL,
   store_path    TEXT,           -- path in store/ directory
   checksum      TEXT,           -- SHA-256 of directory contents
-  manifest_json TEXT,           -- full relava.toml as JSON
+  manifest_json TEXT,           -- full frontmatter metadata as JSON
   published_at  TIMESTAMP,
   UNIQUE(resource_id, version)
 );
@@ -586,7 +576,7 @@ Published skill my-skill@0.1.0
 ```
 
 What it does:
-1. Reads the `relava.toml` manifest in the resource directory
+1. Reads the resource's `.md` file and parses frontmatter for metadata
 2. Validates the resource structure and slug format (see Validation)
 3. Collects all files in the resource directory (excludes hidden files/directories)
 4. Validates file limits: max **100 files**, **10 MB per file**, **50 MB total**
@@ -648,9 +638,8 @@ Import an existing resource directory into the local registry.
 
 ```bash
 $ relava import skill ./skills/denden
-Detected: 1 skill (denden), 1 binary
-Generated relava.toml (review and edit)
-Resource ready at ./skills/denden/relava.toml
+Detected: 1 skill (denden)
+Published skill denden@0.1.0 to local registry.
 ```
 
 ---
@@ -1124,7 +1113,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
 - ⬜ 20. `relava doctor` — check server status, database accessibility, store directory, file integrity, manifest sync
 - ⬜ 21. `relava install relava.toml` — read project manifest, resolve all declared resources, bulk install — *depends on 3, 9*
-- ⬜ 22. `relava import <type> <path>` — scan existing resource directory, generate `relava.toml` manifest, validate structure
+- ⬜ 22. `relava import <type> <path>` — scan existing resource directory/file, validate structure, publish to registry
 - ⬜ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), does not install — *depends on 12b*
 - ⬜ 23. Disable/enable mechanism — rename files with `.disabled` suffix, update installation status in database
 - ⬜ 24. End-to-end integration testing — publish to local store, install into test project, list, update, remove cycle
@@ -1198,7 +1187,7 @@ No week assignments — each feature is an independent work item.
 
 - ⬜ 52. Hook installation — read `settings.json`, merge hook definitions into event arrays (PreToolUse, PostToolUse, etc.), record entries for clean removal
 - ⬜ 53. Hook removal — remove specific hook entries from `settings.json`, handle concurrent user edits
-- ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `relava.toml` and `.md` files
+- ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `.md` files and frontmatter
 - ⬜ 55. Project scaffolding — `relava new project <name>` creates project directory with `relava.toml`, `.claude/` structure
 - ⬜ 56. Auto-update notifications — check for newer versions of installed resources on server start or periodic interval, surface in CLI and GUI
 - ⬜ 57. CLAUDE.md auto-management — add/remove skill references in `CLAUDE.md` during install/remove
@@ -1223,7 +1212,7 @@ No week assignments — each feature is an independent work item.
 
 | Feature | npm | brew | Relava |
 |---------|-----|------|--------|
-| Package format | package.json + node_modules | Formula (Ruby DSL) | relava.toml + directory |
+| Package format | package.json + node_modules | Formula (Ruby DSL) | .md frontmatter + directory |
 | Registry | npmjs.com | Homebrew/core | Local server |
 | Install target | node_modules/ | /usr/local/ | .claude/ + skills/ |
 | Platform binaries | Not native | Native | Native |
