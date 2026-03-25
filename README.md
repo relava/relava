@@ -4,7 +4,7 @@ A local package manager and registry for Claude Code resources.
 
 ## What is Relava?
 
-Claude Code's extension model is file-based -- skills are directories, agents are `.md` files, commands are `.md` files, rules are `.md` files, hooks live in `settings.json`. There is no built-in package manager, no versioning, no discovery. Developers manually copy files between projects.
+Claude Code's extension model is file-based -- skills are directories, agents, commands, and rules are `.md` files, hooks live in `settings.json`. There is no built-in package manager, no versioning, no discovery. Developers manually copy files between projects.
 
 Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `npm` manages JavaScript packages or `brew` manages system software -- but everything runs locally on your machine with no cloud dependency.
 
