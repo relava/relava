@@ -30,9 +30,8 @@ Relava solves this by providing:
 1. **Local-first.** Everything works offline. No account required.
 2. **Prompt-layer only.** Relava manages text/files that get injected into Claude's context. It does NOT manage infrastructure (MCP servers, runtimes, databases).
 3. **Non-invasive.** Relava writes files to standard Claude Code locations. If you remove Relava, your installed resources still work — they're just files.
-4. **Multi-file aware.** Skills can contain binaries, templates, and support files. Relava handles the full complexity.
-5. **Platform-aware.** Support for platform-specific binaries (macOS/Linux/Windows) within resources.
-6. **Individual resources.** No bundling or archive step. Each resource is published and installed independently, with its directory contents uploaded as-is.
+4. **Multi-file aware.** Skills can contain templates and support files. Relava handles the full complexity.
+5. **Individual resources.** No bundling or archive step. Each resource is published and installed independently, with its directory contents uploaded as-is.
 
 ---
 
@@ -107,69 +106,19 @@ In direct mode (server not running), the CLI falls back to filesystem reads from
 Every publishable resource has a `relava.toml` at its root:
 
 ```toml
-[resource]
-name = "denden"
-type = "skill"                # skill | agent | command | rule
-version = "1.2.0"
-description = "gRPC CLI for communicating with the StrawPot orchestrator"
-authors = ["Woong <woong@example.com>"]
-license = "MIT"
-readme = "README.md"
-repository = "https://github.com/user/denden"
-keywords = ["grpc", "orchestrator", "cli"]
-min_claude_code_version = "1.0.0"  # optional
-
-# Platform-specific binaries (skills only, optional)
-[platform.macos-arm64]
-binary = "bin/denden-darwin-arm64"
-
-[platform.macos-x64]
-binary = "bin/denden-darwin-x64"
-
-[platform.linux-x64]
-binary = "bin/denden-linux-x64"
-
-[platform.windows-x64]
-binary = "bin/denden-windows-x64.exe"
-
-# Dependencies on other resources (resolved transitively on install)
-[dependencies.skills]
-notify-slack = "0.3.0"         # exact version pin
+# Skill dependencies: name = version constraint
+[skills]
+notify-slack = "0.3.0"
 strawpot-recap = "1.0.0"
 
-[dependencies.agents]
+# Agent dependencies: name = version constraint
+[agents]
 debugger = "0.5.0"
 
-# System tool dependencies (Relava checks PATH and offers to install)
-[tools.gh]
-description = "GitHub CLI"
-install.macos = "brew install gh"
-install.linux = "apt install gh"
-install.windows = "winget install GitHub.cli"
-
-[tools.jq]
-description = "JSON processor"
-install.macos = "brew install jq"
-install.linux = "apt install jq"
-
-# OS-specific install scripts (run in resource directory after file installation)
-[install]
-macos = "scripts/setup-macos.sh"
-linux = "scripts/setup-linux.sh"
-windows = "scripts/setup-windows.ps1"
-
-# Environment requirements (informational — Relava warns, does not provision)
-[env]
-required = ["STRAWPOT_HOST", "STRAWPOT_PORT"]
-optional = ["STRAWPOT_TLS_CERT"]
-
-# MCP server requirements (informational — Relava warns, does not provision)
-[requires.mcp]
-servers = []
-
-# Hook definitions (Phase 4+)
-# [hooks.PreToolUse]
-# command = "..."
+# Future sections (not yet implemented):
+# [rules]
+# [commands]
+# [hooks]
 ```
 
 ### Resource Naming (Slug Format)
@@ -458,9 +407,6 @@ Install a resource into the current project.
 $ relava install skill denden
 Installing skill denden@1.2.0...
   [skill]   skills/denden/SKILL.md + 3 files
-  [binary]  skills/denden/bin/denden (macos-arm64)
-  [warn]    Requires env: STRAWPOT_HOST, STRAWPOT_PORT
-            Set these in .claude/settings.json under "env"
 Installed skill denden@1.2.0
 
 # Install and save to relava.toml
@@ -502,11 +448,9 @@ What it does:
 1. Resolves resource and version from the local registry server
 2. Resolves transitive dependencies (DFS for skills, server-side topological sort for agents)
 3. Installs dependencies in leaf-first order, skipping already-installed versions
-4. Copies files to the correct Claude Code locations
-5. Selects the correct platform binary if applicable
-6. Records installation in database (including dependency relationships)
-7. Prints warnings for env requirements and MCP dependencies
-8. If `--save` is used, writes the top-level resource and version to `relava.toml`
+4. Downloads and copies files to the correct Claude Code locations
+5. Records installation in database (including dependency relationships)
+6. If `--save` is used, writes the top-level resource and version to `relava.toml`
 
 #### `relava install relava.toml`
 
@@ -586,10 +530,8 @@ $ relava info skill denden
 Name:        denden
 Type:        skill
 Version:     1.2.0 (latest)
-Description: gRPC CLI for communicating with the StrawPot orchestrator
-Platforms:   macos-arm64, macos-x64, linux-x64
-Env Required: STRAWPOT_HOST, STRAWPOT_PORT
-Size:        4.2 MB
+Skills:      notify-slack@0.3.0
+Size:        12 KB
 ```
 
 #### `relava update <resource-type> <resource-name> [--all]`
@@ -644,11 +586,9 @@ Both client-side (CLI) and server-side validation are enforced:
 | Check | Client | Server |
 |-------|--------|--------|
 | Slug format (1-64 chars, lowercase alphanumeric + hyphens, starts with alphanumeric) | Yes | Yes |
-| Display name (up to 128 chars) | Yes | Yes |
 | File count (max 100) | Yes | Yes |
 | File size (max 10 MB each) | Yes | Yes |
 | Total size (max 50 MB) | Yes | Yes |
-| Required fields (name, type, version, description) | Yes | Yes |
 | Semver format | Yes | Yes |
 | Version monotonicity (must be > latest published) | No | Yes |
 | Dependency existence (all deps must exist in registry) | No | Yes |
@@ -680,8 +620,6 @@ Checking Relava installation...
   [ok]   Server running on :7420
   [ok]   Database accessible
   [ok]   Store directory exists
-  [warn] 1 installed resource has unmet env requirements:
-         skill denden: STRAWPOT_HOST not set
   [ok]   All installed files present on disk
   [ok]   relava.toml in sync
 ```
@@ -791,18 +729,14 @@ All installs download resource files via HTTP from the server (`GET /api/v1/reso
 1. Download skill files from server via HTTP
 2. Create `skills/<skill-name>/` in project root
 3. Write `SKILL.md` and all support files into it
-4. If resource has platform binaries, select the correct one for the current OS/arch and write to `skills/<skill-name>/bin/`
-5. Run OS-specific install scripts if declared (see Tool & Script Installation)
-6. Check and install declared system tool dependencies (see Tool & Script Installation)
-7. Skill is automatically discoverable by Claude Code (Claude reads `skills/` directories)
-8. Record all written file paths in `installations.installed_files_json`
+4. Skill is automatically discoverable by Claude Code (Claude reads `skills/` directories)
+5. Record all written file paths in `installations.installed_files_json`
 
 #### Agents
 
 1. Download agent files from server via HTTP
 2. Write `.md` file to `.claude/agents/<agent-name>.md`
-3. Run OS-specific install scripts if declared
-4. Agent is immediately available via `/agents` in Claude Code
+3. Agent is immediately available via `/agents` in Claude Code
 
 #### Commands
 
@@ -822,69 +756,6 @@ All installs download resource files via HTTP from the server (`GET /api/v1/reso
 2. Merge hook definitions into the appropriate event arrays (PreToolUse, PostToolUse, etc.)
 3. Write updated `settings.json`
 4. Record the specific hook entries added (for clean removal)
-
-### Tool & Script Installation
-
-After writing resource files, Relava handles two additional installation steps:
-
-#### System Tool Dependencies (`[tools.*]`)
-
-Resources can declare system tools they require. Relava checks each tool and offers to install missing ones:
-
-1. For each declared tool, check if the binary exists on `PATH` via `which`/`where`
-2. If missing, detect current OS (macOS/Linux/Windows) and look up the OS-specific install command
-3. Prompt the user for confirmation (skip with `--yes` flag, skip all with `--skip-tools`)
-4. Execute the install command via subprocess (e.g., `brew install gh`)
-5. Report status per tool: `installed`, `skipped`, `failed`, `declined`, `no_command` (no install command for current OS)
-
-Tool installation failures are **non-fatal** — the resource is still installed, with a warning that a required tool is missing.
-
-```bash
-$ relava install skill code-review
-Installing skill code-review@1.0.0...
-  [skill]   skills/code-review/SKILL.md + 2 files
-  [tool]    gh — not found on PATH
-            Install with: brew install gh? [Y/n] y
-  [tool]    gh — installed
-  [tool]    jq — already on PATH
-Installed skill code-review@1.0.0
-```
-
-#### OS-Specific Install Scripts (`[install]`)
-
-Resources can include setup scripts that run after file installation:
-
-1. Detect current OS and look up the matching script path from `[install]` section
-2. Verify the script file exists within the installed resource directory
-3. Execute the script with `INSTALL_DIR` environment variable set to the resource's installed directory
-4. Script runs in the resource directory as working directory
-5. Report success or failure
-
-Install script failures are **non-fatal** — the resource files remain installed.
-
-```bash
-$ relava install skill denden
-Installing skill denden@1.2.0...
-  [skill]   skills/denden/SKILL.md + 5 files
-  [binary]  skills/denden/bin/denden (macos-arm64)
-  [script]  Running scripts/setup-macos.sh...
-  [script]  Setup complete
-Installed skill denden@1.2.0
-```
-
-#### `relava install-tools <resource-type> <resource-name>`
-
-Re-run tool installation and install scripts for an already-installed resource (useful if tools were declined or failed earlier):
-
-```bash
-$ relava install-tools skill code-review
-Checking tools for skill code-review@1.0.0...
-  [tool]    gh — not found on PATH
-            Install with: brew install gh? [Y/n] y
-  [tool]    gh — installed
-  [script]  Running scripts/setup-macos.sh...
-  [script]  Setup complete
-```
 
 ### How Remove Works
 
@@ -926,20 +797,20 @@ This mirrors `npm install --save` behavior. The `relava.toml` file is the declar
 
 ## 8. Dependency Resolution
 
-Resources can declare dependencies on other resources via the `[dependencies]` section in their `relava.toml` manifest. Relava resolves these transitively before installation, using a strategy that varies by resource type.
+Resources can declare dependencies on other resources via the `[skills]` and `[agents]` sections in their `relava.toml` manifest. Relava resolves these transitively before installation, using a strategy that varies by resource type.
 
 ### Dependency Declaration
 
 ```toml
 # In a resource's relava.toml
-[dependencies.skills]
+[skills]
 notify-slack = "0.3.0"
 
-[dependencies.agents]
+[agents]
 debugger = "0.5.0"
 ```
 
-Dependencies are typed — a skill can depend on other skills, agents can depend on skills and other agents, commands/rules can depend on skills. Each entry is a resource name with an exact version pin.
+Dependencies are typed — a skill can depend on other skills, agents can depend on skills and other agents. Each entry is a resource name with a version constraint.
 
 ### Resolution Strategies
 
@@ -1036,7 +907,7 @@ When removing a resource, Relava checks whether it is a dependency of other inst
 | Week | Deliverable |
 |------|-------------|
 | 1 | Project scaffolding (Rust CLI with clap). `relava.toml` parser (both resource manifest and project manifest). Resource validation. |
-| 2 | Local store (`~/.relava/store/`). SQLite database setup with schema. `relava init`, `relava install <type> <name>` (from local store), `relava remove <type> <name>`. Platform binary selection. `--save` flag support. |
+| 2 | Local store (`~/.relava/store/`). SQLite database setup with schema. `relava init`, `relava install <type> <name>` (from local store), `relava remove <type> <name>`. `--save` flag support. |
 | 3 | `relava list <type>`, `relava info <type> <name>`, `relava update <type> <name>`, `relava doctor`. `relava install relava.toml` (bulk install from manifest). `relava import` for converting existing resource directories. |
 
 **Milestone**: Developer can publish a resource to local store, install it into a project, list installed resources, remove, and update — all via CLI.
@@ -1135,7 +1006,7 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 8. ~~**CLAUDE.md skill trigger descriptions**~~ **Resolved by #2.** Relava does not manage CLAUDE.md or trigger descriptions.
 
-9. ~~**Migration tooling**~~ **Resolved.** No additional migration DSL. The update flow already diffs files (add/remove/overwrite) and `[install]` scripts handle any post-update setup. Resource authors use install scripts for complex migrations.
+9. ~~**Migration tooling**~~ **Resolved.** No additional migration DSL. The update flow already diffs files (add/remove/overwrite). No migration scripts needed for now.
 
 10. ~~**Resource naming**~~ **Resolved.** Flat namespace with slug validation (1-64 chars, lowercase alphanumeric + hyphens). Scoped namespaces (`@org/name`) deferred to when/if a cloud registry is introduced.
 
@@ -1149,13 +1020,13 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 
 #### Week 1 — Scaffolding & Parsing
 
-- ⬜ 1. Project scaffolding — Rust workspace, Cargo.toml, clap CLI skeleton with global options (`--server`, `--project`, `--verbose`, `--json`)
-- ⬜ 2. `relava.toml` parser — resource manifest format (name, type, version, description, platform, env, etc.)
+- ✅ 1. Project scaffolding — Rust workspace, Cargo.toml, clap CLI skeleton with global options (`--server`, `--project`, `--verbose`, `--json`)
+- ✅ 2. `relava.toml` parser — resource manifest format (`[skills]`, `[agents]` sections with name=version constraint entries)
 - ⬜ 3. `relava.toml` parser — project manifest format (skills, agents, commands, rules sections with name=version constraint entries: `"X.Y.Z"`, `"==X.Y.Z"`, `"*"`)
 - ⬜ 3a. Version constraint resolver — parse and resolve `"*"` to latest, `"==X.Y.Z"` and `"X.Y.Z"` to exact versions from local store
 - ⬜ 4. Resource validation — validate directory structure per resource type (skill needs `SKILL.md`, agent needs `<name>.md`, etc.)
 - ⬜ 4a. Slug validation — enforce slug format (1-64 chars, lowercase alphanumeric + hyphens, starts/ends with alphanumeric, no consecutive hyphens) on all resource names
-- ⬜ 5. Resource validation — validate manifest fields (semver format, required fields, valid type enum)
+- ⬜ 5. Resource validation — validate manifest fields (semver format, valid type enum)
 
 #### Week 2 — Local Store & Core Commands
 
@@ -1166,12 +1037,8 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
 - ⬜ 9b. Direct mode fallback — when server is not running, fall back to filesystem reads from local store for basic install operations — *depends on 9a*
 - ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `skills/<name>/`, handle multi-file directories
-- ⬜ 10a. Tool dependency checker — parse `[tools.*]` from manifest, check each tool on PATH via `which`, detect OS, prompt user, execute install commands, report status (installed/skipped/failed/declined/no_command) — *depends on 2*
-- ⬜ 10b. OS-specific install scripts — parse `[install]` section, detect OS, execute matching script in resource directory with `INSTALL_DIR` env var, non-fatal on failure — *depends on 2*
-- ⬜ 10c. `relava install-tools <type> <name>` — re-run tool installation and install scripts for already-installed resources — *depends on 10a, 10b*
 - ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
-- ⬜ 12. Platform binary selection — detect OS/arch, select correct binary from `[platform.*]` manifest entries — *depends on 2*
-- ⬜ 12a. Dependency declaration parser — parse `[dependencies.skills]`, `[dependencies.agents]` sections from resource manifest — *depends on 2*
+- ⬜ 12a. Dependency declaration parser — parse `[skills]`, `[agents]` sections from resource manifest — *depends on 2*
 - ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
 - ⬜ 12c. Dependency-aware install — install transitive dependencies in resolved order before the target resource, skip already-installed versions — *depends on 9, 12b*
 - ⬜ 13. Installation record tracking — write installed file paths and dependency relationships to `installations.installed_files_json` in database
@@ -1181,10 +1048,10 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 #### Week 3 — Remaining CLI Commands
 
 - ⬜ 16. `relava list <type>` — list installed resources for current project with version and status (active/disabled)
-- ⬜ 17. `relava info <type> <name>` — display full resource details (description, platforms, env requirements, size)
+- ⬜ 17. `relava info <type> <name>` — display full resource details (dependencies, size)
 - ⬜ 18. `relava update <type> <name>` — download new version, diff installed files, handle user-modified files, update database — *depends on 9*
 - ⬜ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
-- ⬜ 20. `relava doctor` — check server status, database accessibility, store directory, env requirements, file integrity, manifest sync
+- ⬜ 20. `relava doctor` — check server status, database accessibility, store directory, file integrity, manifest sync
 - ⬜ 21. `relava install relava.toml` — read project manifest, resolve all declared resources, bulk install — *depends on 3, 9*
 - ⬜ 22. `relava import <type> <path>` — scan existing resource directory, generate `relava.toml` manifest, validate structure
 - ⬜ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), does not install — *depends on 12b*

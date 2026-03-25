@@ -47,14 +47,6 @@ pub enum Command {
         /// Install globally to ~/.claude/
         #[arg(long)]
         global: bool,
-
-        /// Auto-confirm all prompts
-        #[arg(short, long)]
-        yes: bool,
-
-        /// Skip system tool installation
-        #[arg(long)]
-        skip_tools: bool,
     },
 
     /// Remove a resource from the current project
@@ -156,14 +148,6 @@ pub enum Command {
         path: String,
     },
 
-    /// Re-run tool installation for an installed resource
-    InstallTools {
-        /// Resource type
-        resource_type: String,
-
-        /// Resource name
-        name: String,
-    },
 }
 
 #[derive(Subcommand)]
