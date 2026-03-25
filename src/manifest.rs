@@ -3,34 +3,58 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
-// Resource dependencies — parsed from `metadata.relava` in .md frontmatter
+// Resource metadata — parsed from `metadata.relava` in .md frontmatter
 // ---------------------------------------------------------------------------
 
-/// Dependencies extracted from a resource's .md frontmatter.
-///
-/// Frontmatter dependencies are names only — no version pins.
-/// Version control belongs at the project level (relava.toml).
+/// A system tool dependency with OS-specific install commands.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct ToolSpec {
+    pub description: String,
+    #[serde(default)]
+    pub install: BTreeMap<String, String>, // os -> command (e.g., "macos" -> "brew install gh")
+}
+
+/// An environment variable requirement.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct EnvSpec {
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Resource metadata extracted from a resource's .md frontmatter.
 ///
 /// Example frontmatter:
 /// ```yaml
 /// ---
-/// name: orchestrator
-/// description: Coordinates feature development
+/// name: code-review
+/// description: Code review with security checks
 /// metadata:
 ///   relava:
 ///     skills:
-///       - notify-slack
-///       - code-review
-///     agents:
-///       - debugger
+///       - security-baseline
+///     tools:
+///       gh:
+///         description: GitHub CLI
+///         install:
+///           macos: brew install gh
+///     env:
+///       GITHUB_TOKEN:
+///         required: true
+///         description: GitHub API token
 /// ---
 /// ```
 #[derive(Debug, Default, PartialEq)]
-pub struct ResourceDeps {
+pub struct ResourceMeta {
     /// Skill dependency names
     pub skills: Vec<String>,
     /// Agent dependency names
     pub agents: Vec<String>,
+    /// System tool dependencies
+    pub tools: BTreeMap<String, ToolSpec>,
+    /// Environment variable requirements
+    pub env: BTreeMap<String, EnvSpec>,
 }
 
 /// Full frontmatter structure for deserializing .md files.
@@ -52,6 +76,10 @@ struct RelavaBlock {
     skills: Vec<String>,
     #[serde(default)]
     agents: Vec<String>,
+    #[serde(default)]
+    tools: BTreeMap<String, ToolSpec>,
+    #[serde(default)]
+    env: BTreeMap<String, EnvSpec>,
 }
 
 /// Extract the YAML frontmatter string from markdown content.
@@ -66,8 +94,8 @@ fn extract_frontmatter(content: &str) -> Option<&str> {
     Some(&after_open[..end])
 }
 
-impl ResourceDeps {
-    /// Parse dependencies from markdown content containing YAML frontmatter.
+impl ResourceMeta {
+    /// Parse resource metadata from markdown content containing YAML frontmatter.
     pub fn from_md(content: &str) -> Result<Self, ManifestError> {
         let yaml = match extract_frontmatter(content) {
             Some(y) => y,
@@ -85,10 +113,12 @@ impl ResourceDeps {
         Ok(Self {
             skills: relava.skills,
             agents: relava.agents,
+            tools: relava.tools,
+            env: relava.env,
         })
     }
 
-    /// Parse dependencies from a .md file on disk.
+    /// Parse resource metadata from a .md file on disk.
     pub fn from_file(path: &Path) -> Result<Self, ManifestError> {
         let content =
             std::fs::read_to_string(path).map_err(|e| ManifestError::Io(path.to_path_buf(), e))?;
@@ -181,34 +211,35 @@ impl std::error::Error for ManifestError {}
 mod tests {
     use super::*;
 
-    // -- ResourceDeps (frontmatter) tests --
+    // -- ResourceMeta (frontmatter) tests --
 
     #[test]
-    fn deps_no_frontmatter() {
+    fn meta_no_frontmatter() {
         let md = "# Just a heading\nSome content.";
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert!(deps.skills.is_empty());
-        assert!(deps.agents.is_empty());
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert!(meta.skills.is_empty());
+        assert!(meta.agents.is_empty());
+        assert!(meta.tools.is_empty());
+        assert!(meta.env.is_empty());
     }
 
     #[test]
-    fn deps_no_metadata() {
+    fn meta_no_metadata() {
         let md = "---\nname: test\ndescription: A test\n---\nBody.";
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert!(deps.skills.is_empty());
-        assert!(deps.agents.is_empty());
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert!(meta.skills.is_empty());
+        assert!(meta.tools.is_empty());
     }
 
     #[test]
-    fn deps_no_relava_block() {
+    fn meta_no_relava_block() {
         let md = "---\nname: test\nmetadata:\n  author: someone\n---\nBody.";
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert!(deps.skills.is_empty());
-        assert!(deps.agents.is_empty());
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert!(meta.skills.is_empty());
     }
 
     #[test]
-    fn deps_skills_only() {
+    fn meta_skills_only() {
         let md = r#"---
 name: code-review
 description: Code review skill
@@ -220,13 +251,15 @@ metadata:
 ---
 Instructions here.
 "#;
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills, vec!["notify-slack", "style-guide"]);
-        assert!(deps.agents.is_empty());
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.skills, vec!["notify-slack", "style-guide"]);
+        assert!(meta.agents.is_empty());
+        assert!(meta.tools.is_empty());
+        assert!(meta.env.is_empty());
     }
 
     #[test]
-    fn deps_agents_only() {
+    fn meta_agents_only() {
         let md = r#"---
 name: orchestrator
 description: Orchestrator agent
@@ -235,18 +268,16 @@ metadata:
     agents:
       - debugger
 ---
-Body.
 "#;
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert!(deps.skills.is_empty());
-        assert_eq!(deps.agents, vec!["debugger"]);
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert!(meta.skills.is_empty());
+        assert_eq!(meta.agents, vec!["debugger"]);
     }
 
     #[test]
-    fn deps_both() {
+    fn meta_deps_both() {
         let md = r#"---
 name: orchestrator
-description: Full orchestrator
 metadata:
   relava:
     skills:
@@ -255,13 +286,13 @@ metadata:
       - debugger
 ---
 "#;
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills, vec!["notify-slack"]);
-        assert_eq!(deps.agents, vec!["debugger"]);
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.skills, vec!["notify-slack"]);
+        assert_eq!(meta.agents, vec!["debugger"]);
     }
 
     #[test]
-    fn deps_ignores_unknown_metadata_keys() {
+    fn meta_ignores_unknown_metadata_keys() {
         let md = r#"---
 name: test
 metadata:
@@ -273,8 +304,96 @@ metadata:
     key: value
 ---
 "#;
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills, vec!["foo"]);
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.skills, vec!["foo"]);
+    }
+
+    #[test]
+    fn meta_tools() {
+        let md = r#"---
+name: code-review
+metadata:
+  relava:
+    tools:
+      gh:
+        description: GitHub CLI
+        install:
+          macos: brew install gh
+          linux: apt install gh
+          windows: winget install GitHub.cli
+      jq:
+        description: JSON processor
+        install:
+          macos: brew install jq
+          linux: apt install jq
+---
+"#;
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.tools.len(), 2);
+
+        let gh = &meta.tools["gh"];
+        assert_eq!(gh.description, "GitHub CLI");
+        assert_eq!(gh.install["macos"], "brew install gh");
+        assert_eq!(gh.install["linux"], "apt install gh");
+        assert_eq!(gh.install["windows"], "winget install GitHub.cli");
+
+        let jq = &meta.tools["jq"];
+        assert_eq!(jq.description, "JSON processor");
+        assert_eq!(jq.install.len(), 2); // no windows entry
+    }
+
+    #[test]
+    fn meta_env() {
+        let md = r#"---
+name: code-review
+metadata:
+  relava:
+    env:
+      GITHUB_TOKEN:
+        required: true
+        description: GitHub API token
+      SLACK_WEBHOOK:
+        required: false
+        description: Slack webhook URL
+---
+"#;
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.env.len(), 2);
+
+        let gh_token = &meta.env["GITHUB_TOKEN"];
+        assert!(gh_token.required);
+        assert_eq!(gh_token.description, "GitHub API token");
+
+        let slack = &meta.env["SLACK_WEBHOOK"];
+        assert!(!slack.required);
+        assert_eq!(slack.description, "Slack webhook URL");
+    }
+
+    #[test]
+    fn meta_full_example() {
+        let md = r#"---
+name: code-review
+description: Comprehensive code review
+metadata:
+  relava:
+    skills:
+      - security-baseline
+    tools:
+      gh:
+        description: GitHub CLI
+        install:
+          macos: brew install gh
+    env:
+      GITHUB_TOKEN:
+        required: true
+        description: GitHub API token
+---
+"#;
+        let meta = ResourceMeta::from_md(md).unwrap();
+        assert_eq!(meta.skills, vec!["security-baseline"]);
+        assert_eq!(meta.tools.len(), 1);
+        assert_eq!(meta.env.len(), 1);
+        assert!(meta.env["GITHUB_TOKEN"].required);
     }
 
     // -- ProjectManifest (TOML) tests --
