@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -166,7 +168,8 @@ impl ProjectManifest {
     pub fn from_file(path: &Path) -> Result<Self, ManifestError> {
         let content =
             std::fs::read_to_string(path).map_err(|e| ManifestError::Io(path.to_path_buf(), e))?;
-        Self::from_str(&content).map_err(|e| ManifestError::TomlParse(path.to_path_buf(), e))
+        Self::from_str(&content)
+            .map_err(|e| ManifestError::TomlParse(Box::new((path.to_path_buf(), e))))
     }
 
     pub fn to_string_pretty(&self) -> Result<String, toml::ser::Error> {
@@ -181,7 +184,7 @@ impl ProjectManifest {
 #[derive(Debug)]
 pub enum ManifestError {
     Io(std::path::PathBuf, std::io::Error),
-    TomlParse(std::path::PathBuf, toml::de::Error),
+    TomlParse(Box<(std::path::PathBuf, toml::de::Error)>),
     FrontmatterParse(serde_yaml::Error),
 }
 
@@ -191,7 +194,8 @@ impl std::fmt::Display for ManifestError {
             ManifestError::Io(path, err) => {
                 write!(f, "failed to read {}: {}", path.display(), err)
             }
-            ManifestError::TomlParse(path, err) => {
+            ManifestError::TomlParse(boxed) => {
+                let (path, err) = boxed.as_ref();
                 write!(f, "failed to parse {}: {}", path.display(), err)
             }
             ManifestError::FrontmatterParse(err) => {

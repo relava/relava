@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use crate::version::Version;
@@ -115,7 +117,10 @@ pub fn validate_slug(slug: &str) -> Result<(), ValidationError> {
             "must not contain consecutive hyphens".to_string(),
         ));
     }
-    if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
         return Err(ValidationError::InvalidSlug(
             slug.to_string(),
             "must contain only lowercase alphanumeric characters and hyphens".to_string(),
@@ -150,9 +155,10 @@ fn validate_skill_structure(path: &Path) -> Result<(), ValidationError> {
     }
     let skill_md = path.join("SKILL.md");
     if !skill_md.exists() {
-        return Err(ValidationError::InvalidStructure(
-            format!("skill directory missing SKILL.md at {}", skill_md.display()),
-        ));
+        return Err(ValidationError::InvalidStructure(format!(
+            "skill directory missing SKILL.md at {}",
+            skill_md.display()
+        )));
     }
     Ok(())
 }
@@ -165,23 +171,24 @@ fn validate_single_md_structure(
     // Accept either a direct .md file or a directory containing name.md
     if path.is_file() {
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            return Err(ValidationError::InvalidStructure(
-                format!("{resource_type} must be a .md file"),
-            ));
+            return Err(ValidationError::InvalidStructure(format!(
+                "{resource_type} must be a .md file"
+            )));
         }
         Ok(())
     } else if path.is_dir() {
         let md_file = path.join(format!("{name}.md"));
         if !md_file.exists() {
-            return Err(ValidationError::InvalidStructure(
-                format!("{resource_type} directory missing {name}.md"),
-            ));
+            return Err(ValidationError::InvalidStructure(format!(
+                "{resource_type} directory missing {name}.md"
+            )));
         }
         Ok(())
     } else {
-        Err(ValidationError::InvalidStructure(
-            format!("{resource_type} path does not exist: {}", path.display()),
-        ))
+        Err(ValidationError::InvalidStructure(format!(
+            "{resource_type} path does not exist: {}",
+            path.display()
+        )))
     }
 }
 
@@ -211,10 +218,16 @@ impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedAgentType(t) => {
-                write!(f, "unsupported agent_type '{t}': only 'claude' is supported")
+                write!(
+                    f,
+                    "unsupported agent_type '{t}': only 'claude' is supported"
+                )
             }
             Self::InvalidResourceType(t) => {
-                write!(f, "invalid resource type '{t}': must be skill, agent, command, or rule")
+                write!(
+                    f,
+                    "invalid resource type '{t}': must be skill, agent, command, or rule"
+                )
             }
             Self::InvalidSlug(slug, reason) => write!(f, "invalid slug '{slug}': {reason}"),
             Self::InvalidStructure(msg) => write!(f, "invalid resource structure: {msg}"),
@@ -261,9 +274,18 @@ mod tests {
 
     #[test]
     fn resource_type_valid() {
-        assert_eq!(ResourceType::from_str("skill").unwrap(), ResourceType::Skill);
-        assert_eq!(ResourceType::from_str("agent").unwrap(), ResourceType::Agent);
-        assert_eq!(ResourceType::from_str("command").unwrap(), ResourceType::Command);
+        assert_eq!(
+            ResourceType::from_str("skill").unwrap(),
+            ResourceType::Skill
+        );
+        assert_eq!(
+            ResourceType::from_str("agent").unwrap(),
+            ResourceType::Agent
+        );
+        assert_eq!(
+            ResourceType::from_str("command").unwrap(),
+            ResourceType::Command
+        );
         assert_eq!(ResourceType::from_str("rule").unwrap(), ResourceType::Rule);
     }
 
@@ -335,28 +357,40 @@ mod tests {
         let dir = tempdir();
         fs::create_dir_all(dir.join("my-skill")).unwrap();
         fs::write(dir.join("my-skill/SKILL.md"), "---\nname: my-skill\n---\n").unwrap();
-        assert!(validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill").is_ok());
+        assert!(
+            validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill")
+                .is_ok()
+        );
     }
 
     #[test]
     fn skill_missing_skill_md() {
         let dir = tempdir();
         fs::create_dir_all(dir.join("my-skill")).unwrap();
-        assert!(validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill").is_err());
+        assert!(
+            validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill")
+                .is_err()
+        );
     }
 
     #[test]
     fn skill_not_a_directory() {
         let dir = tempdir();
         fs::write(dir.join("my-skill"), "not a dir").unwrap();
-        assert!(validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill").is_err());
+        assert!(
+            validate_resource_structure(&dir.join("my-skill"), ResourceType::Skill, "my-skill")
+                .is_err()
+        );
     }
 
     #[test]
     fn agent_as_file() {
         let dir = tempdir();
         fs::write(dir.join("debugger.md"), "---\nname: debugger\n---\n").unwrap();
-        assert!(validate_resource_structure(&dir.join("debugger.md"), ResourceType::Agent, "debugger").is_ok());
+        assert!(
+            validate_resource_structure(&dir.join("debugger.md"), ResourceType::Agent, "debugger")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -364,35 +398,54 @@ mod tests {
         let dir = tempdir();
         fs::create_dir_all(dir.join("debugger")).unwrap();
         fs::write(dir.join("debugger/debugger.md"), "content").unwrap();
-        assert!(validate_resource_structure(&dir.join("debugger"), ResourceType::Agent, "debugger").is_ok());
+        assert!(
+            validate_resource_structure(&dir.join("debugger"), ResourceType::Agent, "debugger")
+                .is_ok()
+        );
     }
 
     #[test]
     fn agent_wrong_extension() {
         let dir = tempdir();
         fs::write(dir.join("debugger.txt"), "content").unwrap();
-        assert!(validate_resource_structure(&dir.join("debugger.txt"), ResourceType::Agent, "debugger").is_err());
+        assert!(
+            validate_resource_structure(&dir.join("debugger.txt"), ResourceType::Agent, "debugger")
+                .is_err()
+        );
     }
 
     #[test]
     fn agent_dir_missing_md() {
         let dir = tempdir();
         fs::create_dir_all(dir.join("debugger")).unwrap();
-        assert!(validate_resource_structure(&dir.join("debugger"), ResourceType::Agent, "debugger").is_err());
+        assert!(
+            validate_resource_structure(&dir.join("debugger"), ResourceType::Agent, "debugger")
+                .is_err()
+        );
     }
 
     #[test]
     fn command_as_file() {
         let dir = tempdir();
         fs::write(dir.join("commit.md"), "content").unwrap();
-        assert!(validate_resource_structure(&dir.join("commit.md"), ResourceType::Command, "commit").is_ok());
+        assert!(
+            validate_resource_structure(&dir.join("commit.md"), ResourceType::Command, "commit")
+                .is_ok()
+        );
     }
 
     #[test]
     fn rule_as_file() {
         let dir = tempdir();
         fs::write(dir.join("no-console-log.md"), "content").unwrap();
-        assert!(validate_resource_structure(&dir.join("no-console-log.md"), ResourceType::Rule, "no-console-log").is_ok());
+        assert!(
+            validate_resource_structure(
+                &dir.join("no-console-log.md"),
+                ResourceType::Rule,
+                "no-console-log"
+            )
+            .is_ok()
+        );
     }
 
     // -- Version validation tests --
@@ -415,11 +468,7 @@ mod tests {
     fn tempdir() -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "relava-test-{}-{}",
-            std::process::id(),
-            id
-        ));
+        let dir = std::env::temp_dir().join(format!("relava-test-{}-{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
