@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -161,6 +160,7 @@ pub struct ProjectManifest {
 }
 
 impl ProjectManifest {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
     }

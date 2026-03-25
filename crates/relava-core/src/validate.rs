@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-
 use std::path::Path;
 
 use crate::version::Version;
@@ -11,6 +10,7 @@ pub enum AgentType {
 }
 
 impl AgentType {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, ValidationError> {
         match s {
             "claude" => Ok(Self::Claude),
@@ -65,6 +65,7 @@ pub enum ResourceType {
 }
 
 impl ResourceType {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, ValidationError> {
         match s {
             "skill" => Ok(Self::Skill),
