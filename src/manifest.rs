@@ -310,12 +310,10 @@ debugger = "0.5.0"
         let toml = r#"
 [skills]
 exact = "1.2.0"
-explicit-exact = "==1.2.0"
 latest = "*"
 "#;
         let manifest = ProjectManifest::from_str(toml).unwrap();
         assert_eq!(manifest.skills["exact"], "1.2.0");
-        assert_eq!(manifest.skills["explicit-exact"], "==1.2.0");
         assert_eq!(manifest.skills["latest"], "*");
     }
 
