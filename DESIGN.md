@@ -975,10 +975,10 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ✅ 1. Project scaffolding — Rust workspace, Cargo.toml, clap CLI skeleton with global options (`--server`, `--project`, `--verbose`, `--json`)
 - ✅ 2. Frontmatter parser — parse `metadata.relava` block from `.md` files to extract skill/agent dependency declarations
 - ⬜ 3. `relava.toml` parser — project manifest format (skills, agents, commands, rules sections with name=version constraint entries: `"X.Y.Z"` or `"*"`)
-- ⬜ 3a. Version constraint resolver — parse and resolve `"*"` to latest, `"X.Y.Z"` to exact version from local store
-- ⬜ 4. Resource validation — validate directory structure per resource type (skill needs `SKILL.md`, agent needs `<name>.md`, etc.)
-- ⬜ 4a. Slug validation — enforce slug format (1-64 chars, lowercase alphanumeric + hyphens, starts/ends with alphanumeric, no consecutive hyphens) on all resource names
-- ⬜ 5. Resource validation — validate manifest fields (semver format, valid type enum)
+- ✅ 3a. Version constraint resolver — parse and resolve `"*"` to latest, `"X.Y.Z"` to exact version from local store
+- ✅ 4. Resource validation — validate directory structure per resource type (skill needs `SKILL.md`, agent needs `<name>.md`, etc.)
+- ✅ 4a. Slug validation — enforce slug format (1-64 chars, lowercase alphanumeric + hyphens, starts/ends with alphanumeric, no consecutive hyphens) on all resource names
+- ✅ 5. Resource validation — validate manifest fields (semver format, valid type enum)
 
 #### Week 2 — Local Store & Core Commands
 
