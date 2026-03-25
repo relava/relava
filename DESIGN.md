@@ -1,1166 +1,1011 @@
-# Relava Design Document
+# Relava — Plan
 
-> Agent Consent, Payment Authorization & Delegation System
+> A local registry and package manager for Claude Code prompt-layer artifacts.
 
 ---
 
-## 1. Product Statement
+## 1. Vision and Goals
 
-Relava is a public SaaS that provides:
+### What Relava Is
 
-- **A consent and payment authorization layer for AI agents** -- agents request purchases, humans approve, and Relava issues single-use virtual cards via Stripe Issuing. Works with any agent framework. No seller integration required.
-- **Agent identity and enrollment** -- device-style enrollment, scoped authority, and cryptographic Proof-of-Possession (PoP) binding.
-- **Spending controls and audit trail** -- per-agent daily limits, per-transaction caps, merchant category restrictions, and append-only event logging for every authorization.
+Relava is a **local package manager and registry** for Claude Code resources. It manages the prompt-layer artifacts that shape how Claude thinks and behaves: skills, agents, commands, rules, and hooks. Think `npm` or `brew`, but for Claude Code extensions.
 
-The system ensures that **every payment requires explicit human consent** and that **spending is bounded by configurable controls**.
+Relava runs **entirely on the developer's machine**. There is no cloud dependency. The local registry server is the single source of truth for published resources.
 
-### Why This Architecture
+### Why It Exists
 
-Relava does not manage login/session delegation to third-party services because OAuth SSO by design requires end-user authentication directly with the identity provider (Google, Facebook, Apple). An intermediary cannot complete OAuth flows without possessing user credentials -- which violates the core security principle. Browser automation for login is deferred to external agent frameworks (Computer Use, Operator, browser-use).
+Claude Code's extension model is file-based — skills are directories, agents are `.md` files, commands are `.md` files, rules are `.md` files, hooks are JSON in `settings.json`. There is no built-in package manager, no versioning, no dependency tracking, no discovery mechanism. Developers manually copy files between projects.
 
-Three approaches were evaluated:
+Relava solves this by providing:
 
-1. **Supervised Browser Agent** -- Relava controls browser automation + virtual cards. Rejected: bot detection arms race, ToS violations, per-site custom automation replaces seller onboarding with equivalent integration work.
-2. **API-First with Partners** -- Partner with services that have public APIs. Rejected: most consumer services lack booking APIs (Airbnb shut theirs down in 2018), B2B API access requires the same business development the pivot was designed to avoid.
-3. **Consent Layer + Virtual Cards (selected)** -- Relava handles only consent and payment. Agent frameworks handle browsing. Fastest to ship, smallest scope, works with any agent framework.
+- **Individual resource management** — each skill, agent, command, and rule is versioned and managed independently
+- **Version management** so resources can be updated, rolled back, and pinned
+- **Multi-project management** — install different resources into different projects
+- **A local registry** with GUI for browsing, searching, and managing resources
+- **A CLI** for scripting and CI workflows
+- **A declarative manifest** (`relava.toml`) for reproducible project setups
 
-Full analysis: `docs/decisions/agent-first-pivot-analysis-2026-03-23.md`
+### Design Principles
 
-### Wedge Statement
-
-**For agent developers:** Give your AI agents a wallet. Any agent framework, any website. Your agent requests a purchase, the human approves, Relava issues a single-use virtual card. No seller integration. No payment credential sharing. Just consent-gated spending.
-
-**For users:** Let your AI agents shop for you without giving them your credit card. You approve every purchase. Spending limits you control. One-time-use cards that expire in 15 minutes. Full audit trail.
-
-### Strategic Sequence
-
-Relava ships in three phases. Phase 1 (this document's primary scope) delivers the consent + virtual card layer. Phases 2 and 3 add seller integration and the full agent commerce platform.
-
-```
-Phase 1 (MVP): Consent + Virtual Cards
-  - Agent enrollment (device code flow)
-  - Payment authorization (human approves, virtual card issued)
-  - Works with any agent framework (Computer Use, Operator, browser-use, custom)
-  - No seller integration needed
-
-Phase 2: Identity & Delegation Layer
-  - Services that want to support agents integrate Relava's delegation model
-  - OAuth-based seller linking, delegation tokens, offline verification
-  - Agent gets proper API access instead of browser automation
-  - Virtual cards remain for non-integrated merchants; destination charges for integrated sellers
-
-Phase 3: Agent Commerce Platform
-  - Full seller onboarding: domain verification, Stripe Connect, delegation tokens
-  - PaymentRequests with seller signatures, destination charges
-  - Browser automation becomes fallback, not primary path
-```
-
-### Security Model: Honest Tradeoffs
-
-Phase 1 accepts a weaker security guarantee than the Phase 2/3 design in exchange for speed-to-market and zero seller integration:
-
-| Property | Phase 1 (Virtual Cards) | Phase 2/3 (Full Delegation) |
-|---|---|---|
-| Agent sees payment credentials | **Yes** -- agent sees ephemeral virtual card number (mitigated: single-use, amount-limited, 15-min expiry) | **Never** -- broker executes payment via Stripe |
-| Payment execution | **Agent executes** -- enters card at checkout | **Broker executes** -- Stripe destination charges |
-| Merchant verification | **None** -- agent self-reports merchant. Reconciled post-hoc via Stripe Issuing webhooks | **Full** -- seller is domain-verified, Stripe-connected |
-| Payment amount integrity | **Agent-reported** -- actual charge may differ (taxes, fees). Mitigated by spending limit with margin | **Seller-signed** -- PaymentRequest with Ed25519 signature |
-| Fraud detection | **Post-hoc reconciliation** via Stripe Issuing webhooks | **Pre-execution validation** -- broker validates everything before Stripe |
-
-**The argument for accepting the Phase 1 tradeoff:** Single-use, amount-limited, time-limited virtual cards are qualitatively different from reusable credentials. A compromised virtual card number is worth $X for 15 minutes at one merchant. A compromised password or reusable card is worth everything forever. The risk is bounded and quantifiable.
+1. **Local-first.** Everything works offline. No account required.
+2. **Prompt-layer only.** Relava manages text/files that get injected into Claude's context. It does NOT manage infrastructure (MCP servers, runtimes, databases).
+3. **Non-invasive.** Relava writes files to standard Claude Code locations. If you remove Relava, your installed resources still work — they're just files.
+4. **Multi-file aware.** Skills can contain binaries, templates, and support files. Relava handles the full complexity.
+5. **Platform-aware.** Support for platform-specific binaries (macOS/Linux/Windows) within resources.
+6. **Individual resources.** No bundling or archive step. Each resource is published and installed independently, with its directory contents uploaded as-is.
 
 ---
 
 ## 2. Architecture Overview
 
-### Phase 1 Architecture (MVP)
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Relava SaaS                          │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │   Identity    │  │   Approval   │  │    Payment       │  │
-│  │   Authority   │  │   Service    │  │    Authorization │  │
-│  │              │  │              │  │                  │  │
-│  │ Agent enroll │  │ Human review │  │ Virtual card     │  │
-│  │ JWT signing  │  │ 2FA verify   │  │ lifecycle mgmt   │  │
-│  │ PoP verify   │  │ Push notify  │  │ Stripe Issuing   │  │
-│  └──────────────┘  └──────────────┘  └──────────────────┘  │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │   Spending    │  │   Audit      │  │    Admin /       │  │
-│  │   Controls    │  │   Log        │  │    Risk          │  │
-│  │              │  │              │  │                  │  │
-│  │ Daily limits │  │ Append-only  │  │ Suspensions      │  │
-│  │ Txn caps    │  │ event stream │  │ Dispute monitor  │  │
-│  │ MCC restrict │  │              │  │ Fraud signals    │  │
-│  └──────────────┘  └──────────────┘  └──────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-         │                    │                    │
-    Agent SDK            Human UI           Stripe Issuing
-  (any framework)     (web, mobile)          (virtual cards)
++------------------------------------------------------+
+|                   Developer Machine                   |
+|                                                       |
+|  +-------------+     +----------------------------+   |
+|  |  relava CLI  |---->|   Relava Local Server      |   |
+|  +-------------+     |                            |   |
+|                       |  REST API (:7420)          |   |
+|  +-------------+     |  Resource Store             |   |
+|  |  Relava GUI  |---->|  SQLite Metadata DB        |   |
+|  | (Web App)    |     |  Installation Engine       |   |
+|  +-------------+     +----------------------------+   |
+|                              |                        |
+|                              v                        |
+|  +---------------------------------------------------+|
+|  |              Project Filesystem                    ||
+|  |                                                    ||
+|  |  .claude/                                          ||
+|  |    agents/        <-- agent .md files              ||
+|  |    commands/       <-- command .md files            ||
+|  |    rules/          <-- rule .md files              ||
+|  |    settings.json   <-- hooks, env, permissions     ||
+|  |  skills/           <-- skill directories           ||
+|  |  relava.toml       <-- resource declarations       ||
+|  |  CLAUDE.md         <-- skill references            ||
+|  +---------------------------------------------------+|
+|                                                       |
+|  +---------------------------------------------------+|
+|  |         ~/.relava/  (Global State)                 ||
+|  |                                                    ||
+|  |  store/            <-- published resource files    ||
+|  |  db.sqlite         <-- metadata, install records   ||
+|  |  config.toml       <-- global configuration        ||
+|  |  cache/            <-- download cache              ||
+|  +---------------------------------------------------+|
++------------------------------------------------------+
 ```
 
-### Clients
+### Component Interactions
 
-| Client | Role |
-|---|---|
-| **Agent SDK (Python)** | Enroll, request payment authorization, retrieve virtual card, report outcome |
-| **Human UI** | Web-based approval console (enrollment, payment authorizations); mobile push later |
-| **Stripe Issuing** | Virtual card creation, spending limits, authorization webhooks, charge reconciliation |
+1. **CLI** talks to the **Local Server** via REST API (or operates in direct mode when server is not running for basic operations).
+2. **GUI** is a web application served by the Local Server.
+3. **Local Server** manages the **Resource Store** (published resource files), **SQLite DB** (metadata, installation records), and performs **Installations** (copying files to project directories).
+4. **Project Filesystem** is the target — Relava writes files to standard Claude Code locations within each project.
+5. **Global State** (`~/.relava/`) persists across projects — the resource store, database, and configuration.
+
+### Direct Mode vs. Server Mode
+
+For simple operations (`relava list skills`, `relava install` for cached resources), the CLI can operate directly against the SQLite DB and filesystem without the server running. The server is required for the GUI, search, and background operations.
 
 ---
 
-## 3. Core Concepts
+## 3. Resource Format Specification
 
-### Principals
+### Resource Manifest: `relava.toml` (per resource)
 
-| Principal | Description |
-|---|---|
-| **User** (`HumanPrincipal`) | A human identity. Authenticated via email + 2FA / passkey. Owner of consent and approval authority. |
-| **Org** (`OrgPrincipal`) | A tenant / organization. Users belong to orgs; agents are enrolled under orgs. |
-| **Agent** (`AgentPrincipal`) | A delegated software identity bound to an Ed25519 keypair. Operates within approved spending limits. |
+Every publishable resource has a `relava.toml` at its root:
 
-### Trust Boundaries
+```toml
+[resource]
+name = "denden"
+type = "skill"                # skill | agent | command | rule
+version = "1.2.0"
+description = "gRPC CLI for communicating with the StrawPot orchestrator"
+authors = ["Woong <woong@example.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/user/denden"
+keywords = ["grpc", "orchestrator", "cli"]
+min_claude_code_version = "1.0.0"  # optional
 
-- **Relava** is the Consent Authority. It is the root of trust for agent enrollment, payment authorization, and spending controls.
-- **Agent** is a constrained delegate. It can only spend within the limits authorized by a human via Relava. It receives ephemeral, single-use virtual card credentials -- not reusable payment methods.
-- **External Agent Frameworks** (Computer Use, Operator, browser-use) handle browser automation, login, and website navigation. Relava does not control or supervise these interactions. Relava's scope is payment authorization.
+# Platform-specific binaries (skills only, optional)
+[platform.macos-arm64]
+binary = "bin/denden-darwin-arm64"
 
-### Security Goals
+[platform.macos-x64]
+binary = "bin/denden-darwin-x64"
 
-1. Explicit human consent for every payment (approval with 2FA).
-2. Single-use, amount-limited, time-limited virtual cards -- bounded credential exposure.
-3. Proof-of-Possession tokens -- agent authentication to Relava requires PoP.
-4. Per-agent spending controls -- daily limits, per-transaction caps, merchant category restrictions.
-5. Full append-only audit trail for all authorization requests, approvals, card issuances, and charges.
-6. Minimize card number exposure: **Goal** is Stripe ephemeral keys (card details flow directly from Stripe to agent SDK, never touching Relava servers). **Fallback** if ephemeral keys are not feasible: card details transit through Relava's API in-memory only, requiring SAQ-D compliance. PCI scope assessment (Open Question #1) determines which path.
+[platform.linux-x64]
+binary = "bin/denden-linux-x64"
+
+[platform.windows-x64]
+binary = "bin/denden-windows-x64.exe"
+
+# Environment requirements (informational — Relava warns, does not provision)
+[env]
+required = ["STRAWPOT_HOST", "STRAWPOT_PORT"]
+optional = ["STRAWPOT_TLS_CERT"]
+
+# MCP server requirements (informational — Relava warns, does not provision)
+[requires.mcp]
+servers = []
+
+# Hook definitions (Phase 4+)
+# [hooks.PreToolUse]
+# command = "..."
+```
+
+### Resource Directory Structures
+
+Each resource type has its own directory layout:
+
+**Skill** (multi-file):
+```
+denden/
+  relava.toml              # Resource manifest (required)
+  SKILL.md                 # Skill definition (required)
+  README.md                # Documentation (recommended)
+  templates/               # Support files
+  lib/                     # Additional code/data
+  bin/                     # Platform-specific binaries
+    denden-darwin-arm64
+    denden-linux-x64
+```
+
+**Agent** (single-file + manifest):
+```
+debugger/
+  relava.toml              # Resource manifest (required)
+  debugger.md              # Agent definition
+```
+
+**Command** (single-file + manifest):
+```
+commit/
+  relava.toml              # Resource manifest (required)
+  commit.md                # Command definition
+```
+
+**Rule** (single-file + manifest):
+```
+no-console-log/
+  relava.toml              # Resource manifest (required)
+  no-console-log.md        # Rule definition
+```
+
+### Versioning
+
+- Follows [Semantic Versioning 2.0.0](https://semver.org/).
+- Version constraints in `relava.toml` project declarations: `>=1.0.0, <2.0.0` (future)
+- The local store keeps multiple versions. Only one version is installed per project at a time.
+
+### Project Manifest: `relava.toml` (per project)
+
+A project-level `relava.toml` declares which resources are installed with explicit versions:
+
+```toml
+# Project resource declarations
+# Managed by `relava install --save` or edited by hand.
+
+[skills]
+denden = "1.2.0"
+notify-slack = "0.3.0"
+strawpot-recap = "1.0.0"
+
+[agents]
+debugger = "0.5.0"
+
+[commands]
+delegate = "1.0.0"
+commit = "0.2.0"
+
+[rules]
+no-console-log = "1.0.0"
+```
+
+This file is:
+- **User-editable** — developers can hand-edit it directly
+- **Read by Relava** — `relava install relava.toml` installs all declared resources
+- **Written by Relava** only when `--save` is used — `relava install skill code-review --save` adds the entry
 
 ---
 
-## 4. Identity & Enrollment
+## 4. Local Registry Server Design
 
-### Key Material
+The Relava server is a local registry that stores published resources and serves the GUI. It is the single source that `relava install` pulls from and `relava publish` pushes to.
 
-| Owner | Algorithm | Purpose |
-|---|---|---|
-| **Agent** | Ed25519 | Generated on-host during enrollment. Used for PoP signatures. Never leaves the agent's runtime. |
-| **Broker** | ES256 (P-256) or EdDSA (Ed25519) | JWT signing keys. Published via JWKS. Rotated on schedule. |
-
-### Credential Types
-
-#### A. Agent Credential (Bootstrap)
-
-- **Lifetime:** Long-lived (weeks to months).
-- **Storage:** Held by the agent locally.
-- **Purpose:** Used to mint short-lived access tokens via `POST /v1/token`.
-- **Binding:** Bound to the agent's public key (PoP).
-
-#### B. Access Token (Broker-Audience JWT)
-
-- **Lifetime:** Short-lived (5-15 minutes).
-- **Audience:** `broker-api`
-- **Purpose:** Authorizes agent requests to the broker (payment authorization, card retrieval).
-- **Contains:** `aud`, `scope`, `org_id`, `agent_id`, constraint references.
-
-### JWT Claim Set (Broker-Audience Access Token)
-
-```json
-{
-  "iss": "https://api.relava.io",
-  "sub": "agent:a1b2c3d4",
-  "org": "org:acme-corp",
-  "scp": ["payment:authorize", "payment:card:read", "payment:outcome:write", "token:refresh"],
-  "aud": "broker-api",
-  "jti": "unique-token-id",
-  "iat": 1700000000,
-  "exp": 1700000600,
-  "cnf": {
-    "jwk": {
-      "kty": "OKP",
-      "crv": "Ed25519",
-      "x": "<agent-public-key-base64url>"
-    }
-  }
-}
-```
-
-### JWKS & Key Rotation
-
-- Broker publishes signing keys at `GET /.well-known/jwks.json`.
-- Optional OIDC discovery at `GET /.well-known/openid-configuration`.
-- Key rotation: new key added to JWKS before old key is removed; overlap period >= max token TTL.
-
-### Proof-of-Possession (PoP) Specification
-
-Every agent request must include a detached PoP signature proving possession of the private key matching the `cnf.jwk` in the token.
-
-**Canonical string format:**
+### Storage
 
 ```
-v1
-ts:{unix_seconds}
-nonce:{base64url(16_random_bytes)}
-method:{HTTP_METHOD}
-path:{URL_PATH_WITH_QUERY}
-body_sha256:{hex(sha256(request_body))}
+~/.relava/
+  config.toml          # Server config (port, defaults)
+  db.sqlite            # All metadata
+  store/               # Published resource files (stored as-is, no archives)
+    skills/
+      denden/
+        1.0.0/         # Version directory
+          relava.toml
+          SKILL.md
+          bin/...
+        1.2.0/
+          relava.toml
+          SKILL.md
+          bin/...
+    agents/
+      debugger/
+        0.5.0/
+          relava.toml
+          debugger.md
+  cache/               # Temporary cache
+  logs/                # Server logs
 ```
 
-**Transport:** `X-AgentPoP` header containing the Ed25519 signature (base64url-encoded) over the canonical string, plus `ts` and `nonce` as structured header parameters.
+### Database Schema (SQLite)
 
-**Verification rules:**
+```sql
+-- Available resources in the registry
+CREATE TABLE resources (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  type          TEXT NOT NULL,  -- 'skill' | 'agent' | 'command' | 'rule'
+  description   TEXT,
+  latest_version TEXT,
+  metadata_json TEXT,           -- full manifest as JSON
+  updated_at    TIMESTAMP,
+  UNIQUE(name, type)
+);
 
-1. Extract `cnf.jwk` from the JWT.
-2. Reconstruct the canonical string from the request.
-3. Verify the Ed25519 signature against the public key.
-4. Reject if `ts` skew > 120 seconds.
-5. Reject if `nonce` was seen within the last 10 minutes (replay protection).
+-- Resource versions
+CREATE TABLE versions (
+  id            INTEGER PRIMARY KEY,
+  resource_id   INTEGER REFERENCES resources(id),
+  version       TEXT NOT NULL,
+  store_path    TEXT,           -- path in store/ directory
+  checksum      TEXT,           -- SHA-256 of directory contents
+  manifest_json TEXT,           -- full relava.toml as JSON
+  published_at  TIMESTAMP,
+  UNIQUE(resource_id, version)
+);
+
+-- Registered projects
+CREATE TABLE projects (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT,
+  path          TEXT NOT NULL UNIQUE,
+  created_at    TIMESTAMP
+);
+
+-- Installation records
+CREATE TABLE installations (
+  id            INTEGER PRIMARY KEY,
+  project_id    INTEGER REFERENCES projects(id),
+  resource_id   INTEGER REFERENCES resources(id),
+  version_id    INTEGER REFERENCES versions(id),
+  installed_at  TIMESTAMP,
+  status        TEXT DEFAULT 'active',  -- 'active' | 'disabled'
+  installed_files_json TEXT,            -- list of files written
+  UNIQUE(project_id, resource_id)
+);
+```
+
+### REST API
+
+Base URL: `http://localhost:7420/api/v1`
+
+#### Resources
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/resources` | List all available resources. Query: `?q=search&type=skill` |
+| `GET` | `/resources/:type/:name` | Get resource details |
+| `GET` | `/resources/:type/:name/versions` | List versions |
+| `GET` | `/resources/:type/:name/versions/:version` | Get specific version details |
+| `POST` | `/resources/:type/:name` | Publish a resource (upload directory contents) |
+| `DELETE` | `/resources/:type/:name` | Remove resource from registry |
+
+#### Projects
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/projects` | List registered projects |
+| `POST` | `/projects` | Register a project (`{ "path": "/Users/..." }`) |
+| `GET` | `/projects/:id` | Get project details |
+| `DELETE` | `/projects/:id` | Unregister a project |
+| `GET` | `/projects/:id/installations` | List installed resources in project |
+
+#### Installations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/projects/:id/install` | Install a resource (`{ "type": "skill", "name": "denden", "version": "1.2.0" }`) |
+| `DELETE` | `/projects/:id/install/:type/:name` | Uninstall a resource |
+| `PUT` | `/projects/:id/install/:type/:name` | Update a resource to a new version |
+| `POST` | `/projects/:id/install/:type/:name/disable` | Disable without removing files |
+| `POST` | `/projects/:id/install/:type/:name/enable` | Re-enable a disabled resource |
+
+#### Server
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Server health check |
+| `GET` | `/stats` | Server statistics (resource count, project count, etc.) |
+
+#### GUI
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Serve the GUI web application |
 
 ---
 
-## 5. Agent Enrollment
+## 5. CLI Design
 
-Device activation flow -- modeled after device-code OAuth (RFC 8628):
+### Command Format
 
-```
-Agent Host                        Broker                         Human (Web UI)
-    |                                |                                |
-    |-- POST /v1/agent/enroll ------>|                                |
-    |   { org_slug,                  |                                |
-    |     agent_pubkey,              |                                |
-    |     agent_name }               |                                |
-    |                                |                                |
-    |<-- 200 ------------------------|                                |
-    |   { activation_code,           |                                |
-    |     activation_url,            |                                |
-    |     expires_at }               |                                |
-    |                                |                                |
-    |   (agent displays code         |                                |
-    |    to operator)                |                                |
-    |                                |                                |
-    |                                |<-- Human opens activation_url -|
-    |                                |    Logs in (2FA / passkey)     |
-    |                                |    Enters activation_code      |
-    |                                |    Sets spending limits        |
-    |                                |                                |
-    |-- POST /v1/agent/activate ---->|                                |
-    |   (polls until approved)       |                                |
-    |                                |                                |
-    |<-- 200 ------------------------|                                |
-    |   { agent_credential,          |                                |
-    |     spending_limits }          |                                |
-    |                                |                                |
-```
-
-**Security property:** The agent never sees human credentials. The human authenticates directly with the broker. The agent credential is bound to the agent's public key via PoP.
-
-**Broker-side on approval:**
-1. Creates `AgentPrincipal` record.
-2. Creates `SpendingPolicy` with user-configured limits.
-3. Issues Agent Credential bound to the agent's public key.
-4. Logs `agent_enroll` audit event.
-
----
-
-## 6. Payment Authorization & Virtual Card Lifecycle
-
-This is the core Phase 1 capability. The flow: agent requests authorization, human approves, Relava issues a virtual card, agent retrieves card and pays, agent reports outcome.
-
-### Payment Authorization Flow
+All CLI commands follow the pattern:
 
 ```
-Agent                    Relava                  Human (UI)           Stripe Issuing
-  |                        |                        |                      |
-  |-- POST /v1/payment/    |                        |                      |
-  |   authorize            |                        |                      |
-  |   { amount: 36000,     |                        |                      |
-  |     currency: "usd",   |                        |                      |
-  |     idempotency_key,   |                        |                      |
-  |     merchant_name:      |                        |                      |
-  |       "Hotels.com",    |                        |                      |
-  |     callback_url?,     |                        |                      |
-  |     description:       |                        |                      |
-  |       "Marriott SF,    |                        |                      |
-  |        Mar 29-31" }    |                        |                      |
-  |                        |                        |                      |
-  |<-- 202 { auth_id,      |                        |                      |
-  |     pending_approval } |                        |                      |
-  |                        |-- Push notification --->|                      |
-  |                        |   "Agent wants $360     |                      |
-  |                        |    on Hotels.com"       |                      |
-  |                        |                        |                      |
-  |                        |<-- Approve (2FA) ------|                      |
-  |                        |                        |                      |
-  |                        |-- Create virtual card ----------------------->|
-  |                        |   spending_limit=$414                         |
-  |                        |   (approved amount +                          |
-  |                        |    15% margin for                             |
-  |                        |    taxes/fees)                                |
-  |                        |                        |                      |
-  |                        |<-- Card details ----------------------------|
-  |                        |   OR: card creation                           |
-  |                        |   fails → card_creation_failed state          |
-  |                        |   → notify human + agent                      |
-  |                        |                        |                      |
-  |<-- callback POST -------|                        |                      |
-  |   (if callback_url set) |                        |                      |
-  |                        |                        |                      |
-  |-- POST /v1/payment/    |                        |                      |
-  |   authorize/{id}/card  |                        |                      |
-  |   (PoP required)       |                        |                      |
-  |                        |                        |                      |
-  |<-- { card_number,      |                        |                      |
-  |     exp, cvc,          |                        |                      |
-  |     limit: $414,       |                        |                      |
-  |     expires_at }       |                        |                      |
-  |                        |                        |                      |
-  | (agent enters card     |                        |                      |
-  |  in checkout)          |                        |                      |
-  |                        |                        |                      |
-  |                        |<-- issuing_authorization.request ------------|
-  |                        |   Relava approves 1st                         |
-  |                        |   authorization, declines                     |
-  |                        |   all subsequent                              |
-  |                        |                        |                      |
-  |                        |<-- issuing_authorization.created -----------|
-  |                        |   (card charged $389)   |                      |
-  |                        |                        |                      |
-  |-- POST /v1/payment/    |                        |                      |
-  |   authorize/{id}/      |                        |                      |
-  |   outcome              |                        |                      |
-  |   { status: "succeeded"|                        |                      |
-  |     confirmation_ref } |                        |                      |
-  |                        |                        |                      |
-  |                        |-- Notification -------->|                      |
-  |                        |   "Payment of $389.47   |                      |
-  |                        |    to Hotels.com done"  |                      |
-  |                        |                        |                      |
-  |                        |-- Cancel card -------------------------------->|
-  |                        |                        |                      |
+relava <verb> <resource-type> <resource-name>
 ```
 
-### Virtual Card Lifecycle
+### Global Options
 
 ```
-States:
-  requested → pending_approval → approved → card_minted → card_retrieved → card_used → deactivated
-                               ↘ denied
-                               ↘ expired (15 min timeout on approval)
-                   approved → card_creation_failed (Stripe API error; retry without re-approval)
-                   card_minted → expired (15 min, unused)
-                   card_minted → cancelled (agent cancels)
-                   card_retrieved → card_used → deactivated
-                   card_retrieved → checkout_failed (agent reports failure) → deactivated
+relava [--server URL] [--project PATH] [--verbose] [--json] <command>
 ```
 
-1. **Requested** -- Agent calls `POST /v1/payment/authorize`. Authorization record created.
-2. **Pending Approval** -- Human notified. Waiting for approve/deny.
-3. **Approved** -- Human approved with 2FA. Virtual card creation initiated via Stripe Issuing.
-4. **Card Minted** -- Virtual card created. Stripe Issuing does not natively support "single-use" as a primitive. Relava implements single-use behavior via the `issuing_authorization.request` real-time webhook: approve the first authorization, decline all subsequent ones. Card is cancelled after first successful charge. Spending limit = approved amount + margin. 15-minute expiry.
-5. **Card Retrieved** -- Agent called `POST /v1/payment/authorize/{id}/card` with PoP. Card details returned. **Retrieval window: 60 seconds.** Within this window, the same agent (verified by PoP) can re-retrieve card details (handles network drops and agent crashes). After 60 seconds, returns 410 Gone.
-6. **Card Used** -- Stripe Issuing `issuing_authorization.created` webhook received. Charge matched to authorization record. Card cancelled on Stripe.
-7. **Deactivated** -- Card cancelled on Stripe Issuing. Triggered by: first use, expiry, agent cancellation, or manual cancellation.
+- `--server` — Override server URL (default: `http://localhost:7420`)
+- `--project` — Override project detection (default: current working directory)
+- `--verbose` — Show detailed output
+- `--json` — Output as JSON (for scripting)
 
-**Failure states:**
-- **Denied** -- Human denied the request. No card issued.
-- **Expired (approval)** -- Human didn't respond within timeout (configurable, default 15 min). Auto-denied.
-- **Card Creation Failed** -- Human approved but Stripe card creation failed. Both agent (via poll/callback) and human (via notification) are informed. Retry is allowed without re-approval.
-- **Expired (card)** -- Card minted but unused within 15 minutes. Auto-deactivated.
-- **Cancelled** -- Agent explicitly cancelled via `POST /v1/payment/authorize/{id}/cancel`. Card deactivated if already minted.
-- **Checkout failure** -- Agent reports via `POST /v1/payment/authorize/{id}/outcome` that card was rejected at checkout. Card deactivated. Agent may retry with new authorization. Feedback loop: log failure reason for pattern detection.
-- **Charge succeeded but checkout failed** -- Edge case: Stripe authorizes the card (charge goes through) but the merchant rejects the booking after payment. State is `card_used` with `outcome: failed`. Reconciliation detects the mismatch. User is notified and must resolve with the merchant directly (refund/dispute). Relava logs the discrepancy for pattern detection.
+### Commands
 
-### Over-Authorization & Reconciliation
+#### `relava init`
 
-Taxes, service fees, and currency conversion mean the final charge rarely matches the pre-approved amount exactly. A $360 hotel booking might charge $389.47 after taxes.
+Initialize current directory as a Relava-managed project.
 
-**Policy:**
-- Virtual card spending limit = approved amount + configurable margin (default 15%).
-- Margin is displayed clearly in the approval UI: "Agent wants $360.00 + up to $54.00 for taxes/fees = $414.00 max."
-- After charge, Relava reconciles: actual charge vs. approved amount. Delta logged with reconciliation status.
-- If actual charge exceeds limit, Stripe Issuing declines the transaction via the real-time authorization webhook.
-- User is charged the actual amount (not the limit), reconciled via Stripe Issuing webhooks.
-
-### Card Number Security
-
-Virtual card numbers are delivered to the agent. Mitigation strategy depends on PCI scope assessment:
-
-1. **Stripe ephemeral keys** (preferred, Goal) -- Card details go directly from Stripe to the agent SDK, never touching Relava's servers. Reduces PCI scope to SAQ-A.
-2. **If ephemeral keys are not feasible** (Fallback) -- Card details transit through Relava's API. Requires SAQ-D compliance (~$50K+ audit). Card details are never stored; transmitted in-memory only.
-3. **Retrieval window** -- Card details can be retrieved within 60 seconds of first retrieval (same agent PoP required). After window, returns 410 Gone.
-4. **PoP required** -- Card retrieval requires agent PoP proof. Stolen access tokens without the private key cannot retrieve cards.
-5. **15-minute expiry** -- Cards auto-deactivate if unused.
-6. **Single-use** -- Cards auto-deactivate after first charge (enforced via real-time authorization webhook, not a Stripe primitive).
-
-**PCI scope assessment (Open Question #1) determines which path. Must resolve before building.**
-
----
-
-## 7. Spending Controls
-
-### Per-Agent Controls
-
-| Control | Description | Default |
-|---|---|---|
-| **Per-transaction cap** | Maximum amount per single authorization | $5,000 |
-| **Daily limit** | Maximum total authorized per agent per day | $10,000 |
-| **Merchant category (MCC) restrictions** | Allowlist or denylist of merchant categories | None (all allowed) |
-| **Merchant name restrictions** | Optional allowlist of merchant names/URLs | None (all allowed) |
-| **Approval required** | Whether human must approve every payment | Always true (MVP) |
-
-### Rate Limits
-
-Rate limits prevent a compromised or buggy agent from flooding the human's approval queue:
-
-| Limit | Value | Configurable |
-|---|---|---|
-| **Max pending authorizations per agent** | 3 | Yes |
-| **Max authorization requests per agent per hour** | 20 | Yes |
-| **Max authorization requests per org per hour** | 100 | Yes |
-
-Requests exceeding rate limits return 429 Too Many Requests with a `Retry-After` header.
-
-### Policy Enforcement
-
-Spending controls are evaluated at two points:
-
-1. **At authorization request** (`POST /v1/payment/authorize`) -- Relava validates against per-agent limits, daily caps, and rate limits before creating the approval event. Rejected requests never reach the human.
-2. **At card authorization** (Stripe Issuing `issuing_authorization.request` webhook) -- Relava approves or declines each card authorization in real-time. Enforces single-use (decline after first charge) and spending limits at the network level.
-
-### SpendingPolicy Record
-
-```typescript
-SpendingPolicy {
-  policy_id:              UUID
-  org_id:                 UUID
-  user_id:                UUID
-  agent_id:               UUID
-  per_transaction_cap:    number        // cents
-  daily_limit:            number        // cents
-  over_auth_margin_pct:   number        // default 15
-  mcc_allowlist:          string[] | null
-  mcc_denylist:           string[] | null
-  merchant_allowlist:     string[] | null
-  max_pending_auths:      number        // default 3
-  max_auths_per_hour:     number        // default 20
-  approval_required:      boolean       // always true for MVP
-  created_at:             timestamp
-  updated_at:             timestamp
-}
+```bash
+$ cd ~/projects/my-app
+$ relava init
+Initialized Relava project at /Users/woong/projects/my-app
+Created relava.toml
+Registered with local server.
 ```
 
----
+What it does:
+- Creates `relava.toml` in project root (empty resource declarations)
+- Registers the project with the local server
+- Scans for existing Claude Code resources and offers to track them
 
-## 8. Human Approval Workflow
+#### `relava install <resource-type> <resource-name> [--version <ver>] [--save] [--global]`
 
-### Approval UI
+Install a resource into the current project.
 
-The human approval interface shows:
+```bash
+# Install a skill (downloads to project only)
+$ relava install skill denden
+Installing skill denden@1.2.0...
+  [skill]   skills/denden/SKILL.md + 3 files
+  [binary]  skills/denden/bin/denden (macos-arm64)
+  [warn]    Requires env: STRAWPOT_HOST, STRAWPOT_PORT
+            Set these in .claude/settings.json under "env"
+Installed skill denden@1.2.0
 
-- **Agent identity** -- which agent is requesting (name, enrollment date, org)
-- **Merchant** -- name and URL as reported by the agent
-- **Amount** -- requested amount + margin + total limit
-- **Description** -- what the agent says it's buying
-- **Spending context** -- agent's daily spend so far, remaining daily budget
-- **History** -- this agent's recent authorization requests
+# Install and save to relava.toml
+$ relava install skill notify-slack --save
+Installing skill notify-slack@0.3.0...
+  [skill]   skills/notify-slack/SKILL.md
+Installed skill notify-slack@0.3.0
+Saved to relava.toml
 
-### Approval Requirements
+# Install a specific version
+$ relava install skill notify-slack --version 0.2.0 --save
+Installing skill notify-slack@0.2.0...
+  [skill]   skills/notify-slack/SKILL.md
+Installed skill notify-slack@0.2.0
+Saved to relava.toml
 
-- **2FA required** for every approval (TOTP or passkey).
-- **No auto-approval in MVP.** Every payment requires human action.
-- **Timeout** -- unanswered requests auto-deny after configurable timeout (default 15 min).
+# Install an agent
+$ relava install agent debugger --save
+Installing agent debugger@0.5.0...
+  [agent]   .claude/agents/debugger.md
+Installed agent debugger@0.5.0
+Saved to relava.toml
 
-### Notification Channels (MVP)
+# Install a command
+$ relava install command commit --save
+Installing command commit@0.2.0...
+  [command] .claude/commands/commit.md
+Installed command commit@0.2.0
+Saved to relava.toml
 
-- **Web UI** -- polling or WebSocket for real-time updates.
-- **Email** -- fallback notification with approval link.
-- **Mobile push** -- nice to have, deferred to post-MVP.
-
----
-
-## 9. API Surface (Phase 1 MVP)
-
-All endpoints are versioned under `/v1/`.
-
-### User & Org Management
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/v1/signup` | Create user account |
-| POST | `/v1/orgs` | Create organization |
-| POST | `/v1/orgs/{org}/members` | Add member to org |
-| POST | `/v1/orgs/{org}/payment-method` | Attach payment method (for funding virtual cards) |
-
-### Agent Lifecycle
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/v1/agent/enroll` | Start enrollment (returns activation code) |
-| POST | `/v1/agent/activate` | Poll / complete activation |
-| POST | `/v1/token` | Mint broker-audience access token (PoP required) |
-
-### Payment Authorization
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/v1/payment/authorize` | Agent requests payment authorization (idempotency_key supported) |
-| GET | `/v1/payment/authorize/{id}` | Poll authorization status |
-| POST | `/v1/payment/authorize/{id}/card` | Retrieve virtual card (60s retrieval window, PoP required) |
-| POST | `/v1/payment/authorize/{id}/outcome` | Agent reports checkout outcome (succeeded/failed/abandoned) |
-| POST | `/v1/payment/authorize/{id}/cancel` | Agent cancels pending authorization or unused card |
-| GET | `/v1/payment/history` | Transaction history for user |
-
-### Approvals
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/v1/approvals` | List pending approvals for user |
-| POST | `/v1/approvals/{id}/approve` | Approve (2FA required) |
-| POST | `/v1/approvals/{id}/deny` | Deny |
-
-### Metadata / Discovery
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/.well-known/jwks.json` | Broker signing keys |
-| GET | `/.well-known/openid-configuration` | OIDC discovery document |
-
-### Request/Response Details
-
-#### POST /v1/payment/authorize
-
-```json
-// Request
-{
-  "idempotency_key": "idk_abc123def456",
-  "amount":          36000,
-  "currency":        "usd",
-  "merchant_name":   "Hotels.com",
-  "merchant_url":    "https://www.hotels.com",
-  "description":     "Marriott SF, Mar 29-31, 2 nights",
-  "callback_url":    "https://agent.example.com/webhook/relava",
-  "metadata":        { "search_session": "abc123" }
-}
-
-// Response (202)
-{
-  "authorization_id": "auth:xyz789",
-  "status":           "pending_approval",
-  "expires_at":       "2026-03-24T12:15:00Z"
-}
+# Install a rule
+$ relava install rule no-console-log
+Installing rule no-console-log@1.0.0...
+  [rule]    .claude/rules/no-console-log.md
+Installed rule no-console-log@1.0.0
 ```
 
-Duplicate requests with the same `idempotency_key` return the existing authorization instead of creating a new one.
+What it does:
+1. Resolves resource and version from the local registry server
+2. Copies files to the correct Claude Code locations
+3. Selects the correct platform binary if applicable
+4. Records installation in database
+5. Prints warnings for env requirements and MCP dependencies
+6. If `--save` is used, writes the resource and version to `relava.toml`
 
-If `callback_url` is provided, Relava POSTs the authorization status to that URL when the human approves/denies. **Callbacks are untrusted notifications only** -- the agent must always verify the actual state by polling `GET /v1/payment/authorize/{id}` before acting on a callback. Signed callbacks (Relava signs payload, agent verifies via JWKS) are deferred to post-MVP.
+#### `relava install relava.toml`
 
-#### POST /v1/payment/authorize/{id}/card
+Install all resources declared in the project's `relava.toml`.
 
-Uses POST (not GET) because this endpoint has a state-changing side effect (marks card as retrieved, starts the 60-second retrieval window).
-
-```json
-// Response (200, within 60s retrieval window)
-{
-  "card_number":    "4242424242421234",
-  "exp_month":      3,
-  "exp_year":       2026,
-  "cvc":            "123",
-  "spending_limit": 41400,
-  "currency":       "usd",
-  "expires_at":     "2026-03-24T12:15:00Z",
-  "single_use":     true,
-  "retrieval_window_expires_at": "2026-03-24T12:01:00Z"
-}
-
-// Response (410, retrieval window expired)
-{
-  "error": "card_retrieval_window_expired",
-  "message": "Card details retrieval window has expired (60s). Request a new authorization."
-}
-
-// Response (409, card_creation_failed)
-{
-  "error": "card_creation_failed",
-  "message": "Virtual card creation failed. Retry is allowed without re-approval.",
-  "retry_allowed": true
-}
+```bash
+$ relava install relava.toml
+Reading relava.toml...
+Installing 4 resources:
+  skill denden@1.2.0 ............ ok
+  skill notify-slack@0.3.0 ...... ok
+  agent debugger@0.5.0 .......... ok
+  command commit@0.2.0 .......... ok
+All resources installed.
 ```
 
-#### POST /v1/payment/authorize/{id}/outcome
+This is analogous to `npm install` with no arguments — it reads the manifest and ensures all declared resources are present.
 
-```json
-// Request
-{
-  "status":            "succeeded",
-  "confirmation_ref":  "CONF-12345",
-  "amount_charged":    38947,
-  "currency":          "usd",
-  "reason":            null
-}
+#### `relava remove <resource-type> <resource-name> [--save]`
 
-// Request (failure)
-{
-  "status":  "failed",
-  "reason":  "card_declined_by_merchant"
-}
+```bash
+$ relava remove skill denden
+Removing skill denden@1.2.0...
+  Removed skills/denden/ (4 files)
+Removed skill denden.
 
-// Request (abandoned)
-{
-  "status":  "abandoned",
-  "reason":  "checkout_page_error"
-}
+$ relava remove skill denden --save
+Removing skill denden@1.2.0...
+  Removed skills/denden/ (4 files)
+Removed skill denden.
+Removed from relava.toml
 ```
 
-#### POST /v1/payment/authorize/{id}/cancel
+What it does:
+1. Looks up `installed_files_json` from database
+2. Removes all files that were installed
+3. Cleans up empty directories
+4. If `--save` is used, removes the entry from `relava.toml`
 
-```json
-// Response (200)
-{
-  "authorization_id": "auth:xyz789",
-  "status":           "cancelled",
-  "card_deactivated":  true
-}
+#### `relava list <resource-type> [--global]`
 
-// Response (409, already used)
-{
-  "error": "authorization_already_used",
-  "message": "Cannot cancel an authorization whose card has already been charged"
-}
+```bash
+$ relava list skills
+Project: /Users/woong/projects/my-app
+
+Name              Version  Status
+denden            1.2.0    active
+notify-slack      0.3.0    active
+strawpot-recap    1.0.0    disabled
+
+$ relava list agents
+Project: /Users/woong/projects/my-app
+
+Name              Version  Status
+debugger          0.5.0    active
+
+$ relava list commands
+No commands installed.
+```
+
+#### `relava search <query>`
+
+```bash
+$ relava search notify
+Type     Name              Version  Description
+skill    notify-slack      0.3.0    Send messages to Slack via Web API
+skill    notify-discord    0.2.1    Send messages to Discord via webhooks
+skill    notify-telegram   0.1.0    Send messages to Telegram via Bot API
+```
+
+#### `relava info <resource-type> <resource-name>`
+
+```bash
+$ relava info skill denden
+Name:        denden
+Type:        skill
+Version:     1.2.0 (latest)
+Description: gRPC CLI for communicating with the StrawPot orchestrator
+Platforms:   macos-arm64, macos-x64, linux-x64
+Env Required: STRAWPOT_HOST, STRAWPOT_PORT
+Size:        4.2 MB
+```
+
+#### `relava update <resource-type> <resource-name> [--all]`
+
+```bash
+$ relava update skill denden
+Updating skill denden 1.0.0 -> 1.2.0...
+  Updated skills/denden/SKILL.md
+  Updated skills/denden/bin/denden
+Updated skill denden to 1.2.0.
+
+$ relava update --all
+Checking 4 resources...
+  skill denden: 1.2.0 (up to date)
+  skill notify-slack: 0.2.0 -> 0.3.0 (updated)
+  skill strawpot-recap: 1.0.0 (up to date)
+  agent debugger: 0.5.0 (up to date)
+```
+
+#### `relava publish <resource-type> <resource-name> [--path PATH]`
+
+Publish a resource to the local Relava registry server.
+
+```bash
+$ relava publish skill denden
+Publishing skill denden@1.2.0 to local registry...
+  Uploading skills/denden/ (5 files, 4.2 MB)
+Published skill denden@1.2.0
+
+$ relava publish skill my-skill --path ./my-custom-skill/
+Publishing skill my-skill@0.1.0 to local registry...
+  Uploading ./my-custom-skill/ (2 files, 12 KB)
+Published skill my-skill@0.1.0
+```
+
+What it does:
+1. Reads the `relava.toml` manifest in the resource directory
+2. Validates the resource structure
+3. Uploads the directory contents as-is to the local Relava server
+4. The server stores the files in `~/.relava/store/<type>/<name>/<version>/`
+
+By default, publishes from the standard location for the resource type (e.g., `skills/<name>/` for skills). Use `--path` to specify a custom source directory.
+
+#### `relava server start [--port PORT] [--daemon]`
+
+```bash
+$ relava server start --daemon
+Relava server started on http://localhost:7420
+GUI available at http://localhost:7420
+
+$ relava server stop
+Relava server stopped.
+
+$ relava server status
+Relava server is running on http://localhost:7420
+  Resources: 12 published, 6 installed in current project
+  Projects: 2 registered
+```
+
+#### `relava doctor`
+
+Check the health of the Relava installation and project.
+
+```bash
+$ relava doctor
+Checking Relava installation...
+  [ok]   Server running on :7420
+  [ok]   Database accessible
+  [ok]   Store directory exists
+  [warn] 1 installed resource has unmet env requirements:
+         skill denden: STRAWPOT_HOST not set
+  [ok]   All installed files present on disk
+  [ok]   relava.toml in sync
+```
+
+#### `relava import <resource-type> <path>`
+
+Import an existing resource directory into the local registry.
+
+```bash
+$ relava import skill ./skills/denden
+Detected: 1 skill (denden), 1 binary
+Generated relava.toml (review and edit)
+Resource ready at ./skills/denden/relava.toml
 ```
 
 ---
 
-## 10. Data Model (Phase 1 MVP)
+## 6. GUI Design
 
-### Identity & Organization
+### Tech Stack
 
-```
-users
-  id, email, email_verified, password_hash, totp_secret, created_at
+- **Framework**: React (Vite build)
+- **Styling**: Tailwind CSS
+- **Bundling**: Built into a static SPA, served by the Relava server
+- **State**: React Query for API calls, minimal client state
 
-orgs
-  id, slug, name, created_at
+### Pages
 
-org_members
-  id, org_id, user_id, role, created_at
-```
+#### Dashboard (`/`)
+- Overview of all registered projects
+- Quick stats: total resources installed, updates available
+- Recent activity log
 
-### Agents
+#### Project View (`/projects/:id`)
+- List of installed resources grouped by type (skills, agents, commands, rules)
+- Install new resource (search + one-click install)
+- Per-resource actions: update, remove, disable/enable, view details
+- Project health warnings (missing env vars, outdated resources)
 
-```
-agents
-  id, org_id, name, pubkey, status (pending|active|suspended|revoked),
-  enrolled_by (user_id), created_at
+#### Resource Browser (`/browse`)
+- Search and filter all available resources
+- Filter by type (skill, agent, command, rule)
+- Sort by name, recently updated
+- Resource cards with description, version, type
 
-spending_policies
-  id, org_id, user_id, agent_id,
-  per_transaction_cap, daily_limit, over_auth_margin_pct,
-  mcc_allowlist (jsonb), mcc_denylist (jsonb),
-  merchant_allowlist (jsonb),
-  max_pending_auths, max_auths_per_hour,
-  approval_required (boolean),
-  created_at, updated_at
-```
+#### Resource Detail (`/resources/:type/:name`)
+- Full README rendered as markdown
+- Version history with changelogs
+- Resource contents (file list)
+- Env requirements and MCP dependencies
+- Install button (with project selector)
+- File browser for resource contents
 
-### Payment Authorizations
+#### Settings (`/settings`)
+- Server configuration (port, data directory)
+- Default install options
+- Cache management (clear cache, store size)
 
-```
-payment_authorizations
-  id, agent_id, org_id, user_id,
-  idempotency_key (unique),
-  amount, currency, merchant_name, merchant_url, description,
-  callback_url,
-  metadata (jsonb),
-  over_auth_margin_pct, spending_limit,
-  status (pending_approval|approved|denied|expired|card_minted|
-          card_creation_failed|card_retrieved|card_used|
-          deactivated|cancelled|checkout_failed),
-  stripe_card_id,
-  card_first_retrieved_at, card_retrieval_window_expires_at,
-  approved_at, approved_by (user_id),
-  denied_at, expires_at, deactivated_at, cancelled_at,
-  created_at
-
-payment_charges
-  id, payment_authorization_id,
-  stripe_authorization_id, amount_charged, currency,
-  merchant_name_actual, merchant_category_code,
-  reconciliation_status (matched|amount_mismatch|merchant_mismatch|both_mismatch),
-  amount_delta,
-  merchant_match (boolean),
-  reconciled_at,
-  created_at
-
-payment_outcomes
-  id, payment_authorization_id, agent_id,
-  status (succeeded|failed|abandoned),
-  confirmation_ref, amount_reported, reason,
-  created_at
-```
-
-### Approvals & Audit
+### Wireframe — Project View
 
 ```
-approval_events
-  id, user_id, type (agent_enroll|payment_authorize),
-  resource_id, resource_type, status (pending|approved|denied),
-  decided_at, created_at
-
-audit_events  (append-only)
-  id, actor_type, actor_id, action, resource_type, resource_id,
-  metadata (jsonb), ip, created_at
++---------------------------------------------------------------+
+| Relava                          [Dashboard] [Browse] [Settings]|
++---------------------------------------------------------------+
+| Project: my-app                                                |
+| Path: /Users/woong/projects/my-app                             |
+| Resources: 4 installed, 1 update available                     |
++---------------------------------------------------------------+
+|                                                                |
+| [Search resources to install...]                   [+ Import]  |
+|                                                                |
+| Skills                                                         |
+| +-----------------------------------------------------------+ |
+| | denden                v1.2.0                    [Active]    | |
+| | gRPC CLI for orchestrator communication                    | |
+| | [Update] [Disable] [Remove]              [View Details ->] | |
+| +-----------------------------------------------------------+ |
+| | notify-slack          v0.2.0              [Active]          | |
+| | Send messages to Slack via Web API    * Update: 0.3.0      | |
+| | [Update] [Disable] [Remove]              [View Details ->] | |
+| +-----------------------------------------------------------+ |
+| | strawpot-recap        v1.0.0              [Disabled]        | |
+| | Session recap generator                                    | |
+| | [Enable] [Remove]                        [View Details ->] | |
+| +-----------------------------------------------------------+ |
+|                                                                |
+| Agents                                                         |
+| +-----------------------------------------------------------+ |
+| | debugger              v0.5.0              [Active]          | |
+| | Debugging assistant agent                                  | |
+| | [Disable] [Remove]                       [View Details ->] | |
+| +-----------------------------------------------------------+ |
+|                                                                |
++---------------------------------------------------------------+
 ```
-
-**Note on `user_id` in `payment_authorizations`:** In MVP, this is the single user who enrolled the agent and is responsible for approval and funding. Multi-user orgs (where the enrolling user, approving user, and funding user may differ) are deferred to post-MVP. At that point, `user_id` splits into `requested_for_user_id` and `approved_by_user_id`.
 
 ---
 
-## 11. Stripe Issuing Integration
+## 7. Installation and Lifecycle
 
-### Requirements
+### How Install Works (per resource type)
 
-- **Entity:** US-based business entity required.
-- **Approval:** Must apply and be approved by Stripe for Issuing.
-- **Card type:** Virtual Visa/Mastercard cards.
-- **Controls:** Per-card spending limits, merchant category restrictions.
-- **Single-use implementation:** Stripe does not natively support single-use cards. Relava implements single-use behavior via the `issuing_authorization.request` real-time webhook: approve the first authorization attempt, decline all subsequent ones, then cancel the card after the first successful charge.
-- **Webhooks:** `issuing_authorization.request` (real-time approve/decline), `issuing_authorization.created` (charge confirmation).
-- **Cost:** ~$0.10-$1.00 per card created (varies by volume).
-- **Timeline to go live:** 1-4 weeks for Stripe Issuing approval.
+#### Skills
 
-### Funding Model
+1. Create `skills/<skill-name>/` in project root
+2. Copy `SKILL.md` and all support files into it
+3. If resource has platform binaries, select the correct one for the current OS/arch and copy to `skills/<skill-name>/bin/`
+4. Skill is automatically discoverable by Claude Code (Claude reads `skills/` directories)
+5. Record all written file paths in `installations.installed_files_json`
 
-Virtual cards require a funding source. The recommended JIT pooled balance model:
+#### Agents
 
-```
-Card Created    → Pool balance reserved ($414 spending limit)
-Card Charged    → Stripe settles to Relava ($389.47 actual)
-Post-settlement → Relava charges user's card on file ($389.47 actual amount)
-Pool released   → $414 - $389.47 = $24.53 returned to pool
-```
+1. Copy `.md` file to `.claude/agents/<agent-name>.md`
+2. Agent is immediately available via `/agents` in Claude Code
 
-**Failure mode:** User's card on file declines post-settlement. Relava absorbs the loss. Collections process TBD. High decline rates trigger account suspension.
+#### Commands
 
-**Float exposure:** Relava is exposed to the card's spending limit from card creation until user card charge succeeds. A $5,000 per-transaction cap limits single-loss exposure. Pooled balance must be sized for expected concurrent authorizations.
+1. Copy `.md` file to `.claude/commands/<command-name>.md`
+2. Command is immediately available via `/<command-name>` in Claude Code
 
-Options evaluated:
+#### Rules
 
-| Option | Description | Regulatory Risk | MVP Feasibility |
-|---|---|---|---|
-| Pre-funded balance | User deposits into Relava wallet | **High** -- likely money transmission | No |
-| User card on file | Relava charges user, funds virtual card | **Medium** -- double-charge appearance | Maybe |
-| Connected accounts | User has Stripe-connected account | **Medium** -- complex user setup | No |
-| **JIT pooled balance** | Relava maintains pooled Issuing balance. On card charge, Relava charges user's card on file for actual amount. | **Medium** -- consult counsel on float risk | **Yes (recommended)** |
+1. Copy `.md` file to `.claude/rules/<rule-name>.md`
+2. Rule is automatically loaded into every Claude Code conversation in this project
 
-**Decision needed before building:** Consult fintech counsel on money transmitter classification for the JIT pooled balance model.
+#### Hooks (Phase 4+)
 
-### Backup Providers
+1. Read current `.claude/settings.json`
+2. Merge hook definitions into the appropriate event arrays (PreToolUse, PostToolUse, etc.)
+3. Write updated `settings.json`
+4. Record the specific hook entries added (for clean removal)
 
-If Stripe Issuing is unavailable or approval is delayed:
-- **Lithic** -- programmatic card issuing API, similar capabilities
-- **Marqeta** -- enterprise card issuing platform
+### How Remove Works
 
-Apply to all three in parallel. Stripe Issuing is preferred for ecosystem alignment.
+1. Look up `installed_files_json` from database
+2. For each file: verify it hasn't been modified by user (checksum comparison)
+   - If modified: warn and ask for confirmation
+   - If unmodified: delete
+3. For hooks: read `settings.json`, remove the specific entries, write back
+4. Clean up empty directories
+5. Remove installation record from database
+6. If `--save` was specified, remove the entry from `relava.toml`
 
----
+### Disable / Enable
 
-## 12. MVP Scope Constraints
+- **Disable**: Renames files with `.disabled` suffix (e.g., `SKILL.md` -> `SKILL.md.disabled`). Claude Code ignores them but they remain on disk.
+- **Enable**: Removes the `.disabled` suffix.
+- Hooks: Remove from / re-add to `settings.json`.
 
-| Dimension | Constraint | Rationale |
-|---|---|---|
-| Buyer authentication | Email + 2FA (TOTP or passkey) | Strong human auth |
-| Currency | USD only | Simplify compliance |
-| Card type | Virtual Visa/Mastercard | Widest acceptance |
-| Approval | Always required | Safety first, no auto-approval |
-| Per-transaction cap | $5,000 globally enforced | Limit blast radius |
-| Over-auth margin | Default 15%, user-configurable | Handle taxes/fees |
-| Card expiry | 15 minutes from minting | Bound exposure window |
-| Card retrieval | 60s window with PoP (POST) | Handle crash/network drop |
-| Token TTL | 5-15 minutes max | Bound revocation window |
-| Agent frameworks | Framework-agnostic API | No vendor lock-in |
-| User model | Single user per agent (MVP) | Defer multi-user org complexity |
-| API versioning | `/v1/` prefix on all endpoints | Future-proof for Phase 2 changes |
+### Update Flow
 
----
+1. Download new version from the local registry store
+2. Compute diff between old and new installed files
+3. For files unchanged by user: overwrite with new version
+4. For files modified by user: warn, offer to overwrite or skip
+5. Handle new files (add) and removed files (delete)
+6. Update database record
+7. If resource is tracked in `relava.toml`, update the version there
 
-## 13. Risks, Open Questions & Resolution Status
+### The `--save` Flag
 
-### Critical (Must Resolve Before Building)
+The `--save` flag controls whether `relava.toml` is modified:
 
-| # | Risk / Question | Status | Mitigation / Resolution |
-|---|---|---|---|
-| 1 | **PCI DSS scope** -- Can Stripe ephemeral keys deliver card details to agent without touching Relava servers? | OPEN | Determines SAQ-A vs SAQ-D ($0 vs $50K+). Must resolve first. |
-| 2 | **Stripe Issuing eligibility** -- Stripe may reject or delay | OPEN | Apply immediately. Parallel-apply to Lithic and Marqeta. If all reject, approach is dead. |
-| 3 | **Funding model / money transmitter** -- JIT pooled balance may constitute money transmission | OPEN | 30-min legal consultation. "If I use Stripe Issuing with pooled balance and charge users post-hoc, am I a money transmitter?" |
-| 4 | **Revenue model** -- How does Relava make money? | OPEN | Options: (A) monthly subscription, (B) per-card fee ($0.50-$1.00), (C) interchange revenue share, (D) combination. |
+- **Without `--save`**: Relava downloads and installs the resource files, records the installation in its database, but does NOT touch `relava.toml`.
+- **With `--save`**: Same as above, plus writes the resource name and explicit version to `relava.toml`.
 
-### High (Must Resolve Before Launch)
-
-| # | Risk / Question | Status | Mitigation / Resolution |
-|---|---|---|---|
-| 5 | **Security model regression** -- Agent sees virtual card numbers | ACCEPTED | Mitigated: single-use, exact-amount, 15-min expiry, 60s retrieval window with PoP. Honest tradeoff documented in Section 1. |
-| 6 | **Amount mismatches** -- Taxes/fees cause charge > approved | DESIGNED | Over-auth margin (default 15%). Stripe enforces limit via real-time webhook. |
-| 7 | **Liability for agent purchases** -- Who pays for unwanted bookings? | OPEN | User approved with 2FA → user accepts liability. Clear ToS required. High chargeback rates risk Issuing revocation. |
-| 8 | **Checkout failure loop** -- Agent framework fails during checkout | DESIGNED | Agent reports outcome via `/outcome` endpoint. Card auto-deactivates on expiry. Failure patterns logged. |
-| 9 | **Stripe card creation failure after approval** -- Human approved but Stripe API fails | DESIGNED | `card_creation_failed` state. Both agent + human notified. Retry without re-approval. |
-| 10 | **Over-auth margin policy** -- 10%? 15%? User-configurable? | OPEN | Default 15%. User-configurable at policy level. |
-| 11 | **Chargeback policy** -- Clear ToS for user-approved agent purchases | OPEN | Must draft before launch. |
-| 12 | **Multi-step payments** -- Hotels authorize now, charge later | OPEN | Single-use cards may not work with delayed capture. May need "hold" cards. |
-
-### Medium
-
-| # | Risk / Question | Status | Mitigation / Resolution |
-|---|---|---|---|
-| 13 | **Competitive moat is thin** -- Virtual card + approval is simple | ACCEPTED | Moat comes in Phase 2 (identity delegation). Virtual card is the wedge, not the castle. |
-| 14 | **Dependency on agent frameworks** -- Relava doesn't control browsing | ACCEPTED | Framework-agnostic API. Good error states. Card timeout limits exposure. |
-| 15 | **Virtual card rejection** -- Some merchants don't accept | ACCEPTED | Test with target merchants. Virtual Visa/MC widely accepted. |
-| 16 | **Card fraud** -- Compromised agent uses card for wrong purchase | DESIGNED | Exact-amount match, MCC locks, real-time authorization webhook, immediate cancellation. |
-| 17 | **User card on file decline (post-charge)** -- Relava can't recoup | OPEN | Relava absorbs loss. Collections TBD. Account suspension on repeated declines. |
-| 18 | **Merchant verification** -- Reconcile agent-reported vs actual | DESIGNED | Stripe webhook provides actual merchant name + MCC. Reconciliation logged in `payment_charges`. |
-
-### Post-Launch
-
-| # | Question | Notes |
-|---|---|---|
-| 19 | **International merchants** -- USD cards with FX | Start USD-only, expand later. |
-| 20 | **Agent framework partnerships** -- Partner or stay agnostic? | Build Claude Computer Use demo, stay API-agnostic. |
-| 21 | **Recurring payments** -- Subscriptions need persistent cards | Defer to Phase 2. |
+This mirrors `npm install --save` behavior. The `relava.toml` file is the declarative manifest that can be committed to version control, allowing collaborators to run `relava install relava.toml` to reproduce the same resource set.
 
 ---
 
-## 14. Error & Failure Handling
+## 8. Implementation Plan
 
-### Critical Failure Paths
+### Phase 1: Core CLI + Resource Format + Local Storage (Weeks 1-3)
 
-| Failure | Trigger | Detection | Recovery | User Impact |
-|---|---|---|---|---|
-| **Card retrieval + network drop** | Agent calls card endpoint, network drops before response received | Agent retries within 60s window | Same agent (PoP verified) can re-retrieve within 60s. After window: request new authorization. | Minimal if retry succeeds; re-approval needed if window expires |
-| **Stripe card creation failure** | Stripe API error after human approval | Stripe returns error on `cards.create()` | State → `card_creation_failed`. Agent + human notified. Retry card creation without re-approval. | Delay, but no re-approval needed |
-| **User card on file decline** | Relava tries to charge user post-settlement | Stripe charge fails | Relava absorbs loss. User account flagged. Collections process TBD. Repeated declines → account suspension. | User may not notice immediately |
-| **Duplicate authorization** | Agent retries without idempotency key | Two authorization records created | `idempotency_key` prevents duplicates. Without key: human sees two approvals (bad UX but not dangerous). | Confusing if no idempotency key |
-| **Approval queue flood** | Compromised/buggy agent sends many requests | Rate limiting (max 3 pending, 20/hour per agent) | Excess requests return 429. Agent suspended if pattern persists. | Human sees at most 3 pending per agent |
-| **Notification delivery failure** | Email/push fails | Delivery status tracking | Web UI always shows pending approvals. Email is fallback, not primary. | Approval may be delayed if human doesn't check UI |
+**Goal**: A working CLI that can install, remove, and list resources locally.
 
----
+| Week | Deliverable |
+|------|-------------|
+| 1 | Project scaffolding (Rust CLI with clap). `relava.toml` parser (both resource manifest and project manifest). Resource validation. |
+| 2 | Local store (`~/.relava/store/`). SQLite database setup with schema. `relava init`, `relava install <type> <name>` (from local store), `relava remove <type> <name>`. Platform binary selection. `--save` flag support. |
+| 3 | `relava list <type>`, `relava info <type> <name>`, `relava update <type> <name>`, `relava doctor`. `relava install relava.toml` (bulk install from manifest). `relava import` for converting existing resource directories. |
 
-## 15. MVP Implementation Plan (5-7 Weeks)
+**Milestone**: Developer can publish a resource to local store, install it into a project, list installed resources, remove, and update — all via CLI.
 
-### Week 1: Identity Foundation
+### Phase 2: Local Registry Server + REST API (Weeks 4-5)
 
-- Database schema: `users`, `orgs`, `org_members`, `agents`, `spending_policies`, `audit_events`
-- User authentication (email + 2FA)
-- Org model and membership
-- JWT signing infrastructure (ES256 or EdDSA)
-- JWKS endpoint (`/.well-known/jwks.json`)
-- Agent enrollment (device code flow): `POST /v1/agent/enroll`, `POST /v1/agent/activate`
-- Agent credential issuance and PoP verification
-- `POST /v1/token` -- broker-audience access token minting
-- Append-only audit event logging
+**Goal**: A running HTTP server that the CLI and GUI can talk to.
 
-### Week 2: Payment Authorization Core
+| Week | Deliverable |
+|------|-------------|
+| 4 | HTTP server (Axum). Core REST endpoints: resources CRUD, projects CRUD. `relava server start/stop/status`. CLI refactored to use API when server is available. |
+| 5 | Installation endpoints. Search endpoint with full-text search (SQLite FTS5). Health and stats endpoints. `relava publish <type> <name>` command (uploads directory to server). Server serves static files for future GUI. |
 
-- Payment authorization API: `POST /v1/payment/authorize` (with idempotency), `GET /v1/payment/authorize/{id}`
-- Approval event system: create, notify, timeout
-- Stripe Issuing integration: card creation, spending limits
-- Stripe Issuing real-time authorization webhook (`issuing_authorization.request`) for single-use enforcement
-- Stripe Issuing charge webhook (`issuing_authorization.created`) for reconciliation
-- Spending policy enforcement: per-transaction cap, daily limit, rate limits
-- Card creation failure handling and retry logic
+**Milestone**: CLI works against the running server. All operations available via REST API. Server manages all state. Resources are published and installed through the server.
 
-### Week 3: Virtual Card Lifecycle
+### Phase 3: GUI (Weeks 6-8)
 
-- Card retrieval endpoint: `POST /v1/payment/authorize/{id}/card` with PoP and 60s retrieval window
-- Card lifecycle state machine: minted → retrieved → used → deactivated (+ failure states)
-- Auto-deactivation on expiry (15 min) and first use (via webhook)
-- Over-authorization margin calculation and enforcement
-- Reconciliation: match Stripe charges to authorization records (with reconciliation_status)
-- Agent outcome reporting: `POST /v1/payment/authorize/{id}/outcome`
-- Agent cancel: `POST /v1/payment/authorize/{id}/cancel`
-- Optional callback_url notification on approval/denial
+**Goal**: A web-based GUI for browsing and managing resources.
 
-### Week 4: Human Approval UI
+| Week | Deliverable |
+|------|-------------|
+| 6 | React app scaffolding (Vite + Tailwind). Dashboard page. Project list and project view with installed resources grouped by type. |
+| 7 | Resource browser with search and type filtering. Resource detail page with README rendering. Install/remove from GUI. |
+| 8 | Settings page. Disable/enable toggle. Update flow with diff preview. Polish and responsive design. |
 
-- Web-based approval console
-- Pending approvals list with agent identity, merchant, amount, description
-- Approve/deny with 2FA verification
-- Real-time updates (WebSocket or polling)
-- Email notification fallback
-- Transaction history view
-- Spending controls management (set per-agent limits, MCC restrictions, rate limits)
+**Milestone**: Developer can manage all resources through a web GUI at `localhost:7420`.
 
-### Week 5: Agent SDK & End-to-End Demo
+### Phase 4: Advanced Features (Weeks 9+)
 
-- Python Agent SDK: enroll, request authorization, retrieve card, report outcome, cancel
-- End-to-end demo with a browser agent framework (e.g., Claude Computer Use)
-- Demo scenario: "Book me a hotel in SF under $200/night"
-- Agent enrolls → searches hotels → requests payment → human approves → agent pays → agent reports outcome → booking confirmed
-
-### Week 6: Hardening
-
-- Rate limiting enforcement and abuse controls
-- Input validation and WAF hardening
-- Error handling and graceful degradation for all failure paths (Section 14)
-- Audit trail completeness verification
-- Reconciliation gap detection and alerting
-- Agent suspension and revocation flows
-
-### Week 7: Documentation & Polish
-
-- Developer documentation and quickstart guide
-- Agent SDK packaging (PyPI)
-- Demo video
-- ToS and chargeback policy documentation
-- Monitoring and alerting setup (structured logging, metrics)
+- Hook installation and management
+- Resource templates (`relava create skill`, `relava create agent`)
+- Project scaffolding (`relava new project`)
+- Auto-update notifications
+- CLAUDE.md auto-management (adding/removing skill references)
+- Version conflict resolution
+- Cache management and cleanup
 
 ---
 
-## 16. Anti-Patterns
+## 9. Tech Stack Recommendations
 
-### Phase 1 Anti-Patterns
+### CLI + Server: Rust
 
-| Anti-Pattern | Why It's Wrong |
-|---|---|
-| **Auto-approving payments** | MVP requires human approval for every transaction. No exceptions. |
-| **Reusable virtual cards** | Cards must be single-use and time-limited. Reusable cards are reusable credentials. |
-| **Storing card numbers on Relava servers** | Use Stripe ephemeral keys where possible. Card numbers should flow from Stripe to agent, bypassing Relava. |
-| **Long-lived bearer tokens without PoP** | Stolen tokens can be replayed. PoP ensures only the keyholder can use the token. |
-| **Trusting agent-reported merchant identity** | Agent claims are reconciled against Stripe Issuing webhook data. Build reconciliation, don't trust. |
-| **Skipping over-authorization margin** | Without margin, most real purchases fail due to taxes/fees. Show the margin clearly in approval UI. |
-| **Building browser automation** | Let agent frameworks solve this. Relava's scope is consent + payment, not browsing. |
-| **Promising instant card deactivation on compromise** | Card deactivation via Stripe API takes seconds, not zero. 15-min expiry is the backstop. |
-| **Using GET for card retrieval** | Card retrieval has a state-changing side effect (starts retrieval window). Use POST. |
-| **One-time-read without retry window** | Network drops between server response and agent receipt leave card unreachable. 60s retrieval window handles this. |
+| Aspect | Choice | Rationale |
+|--------|--------|-----------|
+| Language | **Rust** | Single binary distribution (critical for a developer tool). Fast startup. Strong TOML/SQLite ecosystem. |
+| CLI framework | **clap** | De facto standard for Rust CLIs. Derive macros for ergonomic command definitions. |
+| HTTP server | **Axum** | Async, performant, well-maintained. Pairs with tokio. |
+| Database | **SQLite via rusqlite** | Zero-config, file-based, perfect for local-first. FTS5 for search. |
+| TOML parsing | **toml** crate | Native format, first-class Rust support. |
+| HTTP client | **reqwest** | For CLI-to-server communication. |
+| Logging | **tracing** | Structured logging, compatible with Axum. |
 
-### Phase 2/3 Anti-Patterns (Preserved from Original Design)
+### GUI: React + Vite
 
-| Anti-Pattern | Why It's Wrong |
-|---|---|
-| **Password-based agent signup on seller** | Agents must never possess human passwords. Use delegation tokens. |
-| **Storing seller credentials for agent replay** | Credential theft risk. Agents present broker-issued JWTs, never seller passwords. |
-| **Web scraping login forms** | Fragile, insecure, violates ToS. The delegation model exists to replace this. |
-| **Skipping domain verification for sellers** | Unverified sellers enable phishing and fraud. |
-| **Issuing tokens without PoP binding** | Defeats the security model. Every token must be bound to a key and verified with PoP. |
+| Aspect | Choice | Rationale |
+|--------|--------|-----------|
+| Framework | **React 19** | Widely known, large ecosystem. |
+| Build tool | **Vite** | Fast dev server, optimized production builds. |
+| Styling | **Tailwind CSS** | Utility-first, fast iteration, small bundle. |
+| API layer | **TanStack Query (React Query)** | Caching, refetching, loading states for REST calls. |
+| Markdown rendering | **react-markdown** | For rendering resource READMEs. |
+| Bundling | Built as static SPA, embedded in Rust binary via `include_dir` or served from `~/.relava/gui/`. |
 
----
+### Why Rust over alternatives
 
-## 17. Success Criteria
+- **vs. Go**: Rust's `clap` + `serde` make CLI + config parsing more ergonomic. Single binary either way, but Rust's type system catches more bugs at compile time for a package manager where correctness matters.
+- **vs. TypeScript/Node**: Node requires a runtime. Developer tools should be single binaries. Also, npm-inception is awkward.
+- **vs. Python**: Same runtime problem. Also slower for file operations at scale.
 
-1. An agent (using any browser automation framework) can request payment authorization from Relava.
-2. A human can approve/deny payment requests via web UI with 2FA.
-3. On approval, a virtual card is issued with spending limit (approved amount + margin), enforced via Stripe's real-time authorization webhook.
-4. The agent can retrieve the card (POST, 60s retrieval window, PoP required) and use it to pay on any website accepting Visa/MC.
-5. The card automatically deactivates after first use (webhook-enforced) or expiry (15 min).
-6. Agent can report checkout outcome (succeeded/failed/abandoned) and cancel unused authorizations.
-7. Full audit trail of every authorization request, approval, card issuance, charge, and reconciliation.
-8. End-to-end demo: agent searches for hotels, requests payment, human approves, agent books, agent reports outcome.
-9. Card number exposure minimized per PCI scope assessment (Goal: ephemeral keys; Fallback: transit-only).
-10. All critical failure paths (card retrieval crash, Stripe creation failure, user card decline) have defined recovery.
-11. Revenue model is implemented and functional.
-12. Chargeback and dispute handling policy is documented in ToS.
+The GUI is React because it's the most practical choice for a small web application that needs to look polished — Tailwind + React Query is a well-trodden path.
 
 ---
 
-## Phase 2: Identity & Delegation Layer (Future)
+## 10. Open Questions
 
-> This section preserves the full identity delegation model from the original design. It becomes relevant when services want to integrate directly with Relava for agent-native access, pulled by demand from Phase 1 usage.
+### Must Resolve Before Phase 1
 
-### Phase 2 Transition: Virtual Cards + Destination Charges Coexistence
+1. **Global vs. project resources**: Claude Code has both global (`~/.claude/skills/`) and project-local (`./skills/`) skill locations. Should `relava install --global` target the global location? How do we handle conflicts?
 
-Virtual cards remain the payment method for non-integrated merchants. For Relava-integrated sellers, the broker automatically routes to Stripe destination charges. The agent always calls the same `POST /v1/payment/authorize` endpoint; Relava determines the execution path based on whether the merchant is a registered, verified seller. If the merchant matches a `seller_org` by domain, Relava uses the destination charge flow (no virtual card needed). Otherwise, virtual card flow is used.
+2. **CLAUDE.md management**: Currently, some skills are referenced in `CLAUDE.md`. Should Relava auto-add/remove skill references in CLAUDE.md during install/remove? Or is that the developer's responsibility?
 
-### Phase 2 Principals (Addition)
+3. **settings.json env injection**: When a resource declares required env vars, should `relava install` offer to add placeholder entries to `.claude/settings.json` `env` field? Or just warn?
 
-| Principal | Description |
-|---|---|
-| **Seller** (`SellerOrg`) | A verified merchant / relying party. Domain-verified, Stripe-connected, with its own Ed25519 keypair. |
+### Must Resolve Before Phase 2
 
-### Phase 2 Credential Types (Additions)
+4. **Port selection**: Default port `7420` — is this stable, or should the server find an available port and write it to config?
 
-#### Delegation Token (Seller-Audience JWT)
+5. **Authentication**: Even for local-only, should the server require a token? Prevents other local processes from modifying resources. Low priority but worth deciding.
 
-- **Lifetime:** Short-lived (5-15 minutes).
-- **Audience:** Seller domain (e.g., `seller:example.com`).
-- **Purpose:** Authorizes agent actions at a seller on behalf of a human user.
-- **Contains:** Human-level identity claims via `act` (actor) claim.
+6. **Concurrency**: Multiple CLI invocations or GUI actions at once — how does the server handle concurrent installs to the same project? SQLite WAL mode + row-level locking in application code?
 
-```json
-{
-  "iss": "https://api.relava.io",
-  "sub": "agent:a1b2c3d4",
-  "act": {
-    "sub": "user:u5e6f7g8",
-    "email": "alice@acme.com",
-    "email_verified": true
-  },
-  "aud": "seller:example.com",
-  "scp": ["profile:read", "orders:create"],
-  "jti": "unique-token-id",
-  "iat": 1700000000,
-  "exp": 1700000600,
-  "cnf": {
-    "jwk": {
-      "kty": "OKP",
-      "crv": "Ed25519",
-      "x": "<agent-public-key-base64url>"
-    }
-  },
-  "grant": "grant:g9h0i1j2",
-  "link": "link:lk3m4n5o"
-}
-```
+### Design Decisions Deferred
 
-The `act` claim carries the delegating human's identity so the seller can map the request to a customer account.
+7. **Hook management complexity**: Hooks modify `settings.json` which may have user edits. Merge strategy for JSON modifications needs careful design. Deferred to Phase 4.
 
-#### Delegation Grant
+8. **CLAUDE.md skill trigger descriptions**: Claude Code uses skill descriptions in settings.json or CLAUDE.md to decide when to load a skill. Should Relava manage these trigger descriptions? This is an integration point that could add significant value but also complexity.
 
-```typescript
-DelegationGrant {
-  grant_id:           UUID
-  org_id:             UUID
-  user_id:            UUID
-  agent_id:           UUID
-  seller_id:          UUID | null
-  scopes:             string[]
-  constraints: {
-    approval_required: boolean
-    max_amount:        number | null
-    currency:          string | null
-    seller_allowlist:  string[] | null
-  }
-  audiences:          string[]
-  expires_at:         timestamp
-  revoked_at:         timestamp | null
-}
-```
+9. **Migration tooling**: When a resource author changes the directory structure between versions, how does update handle it? Rename detection? Migration scripts in the resource?
 
-### Phase 2 Services (Additions)
-
-| Service | Responsibility |
-|---|---|
-| **Delegation Service** | Manages grants, scopes, constraints, and consent records |
-| **Token Service** | Mints seller-audience delegation tokens with `act` claims |
-| **Seller Onboarding** | Domain verification, Stripe Connect binding, seller key registration |
-
-### Seller Onboarding (Phase 2)
-
-1. **Domain Verification** -- DNS TXT record or HTTPS well-known file.
-2. **Stripe Connect Onboarding** -- Express account for destination charges.
-3. **Key Registration** -- Seller's Ed25519 public key for signing PaymentRequests.
-
-### Seller Linking (Phase 2)
-
-Seller linking establishes a relationship between a human user and a seller, mediated by the broker, so that an agent can act at the seller on the human's behalf.
-
-**Flow:** Agent initiates link request → human approves → broker redirects to seller callback with one-time code → seller exchanges code for user identity → `SellerLink` created.
-
-### Delegation Token Minting (Phase 2)
-
-Agents request seller-audience JWTs via `POST /v1/delegate/token`. Broker validates delegation grant and seller link existence, then issues a JWT with the `act` claim.
-
-### Offline Verification (Phase 2)
-
-Sellers verify tokens without calling the broker:
-1. Fetch and cache JWKS from `/.well-known/jwks.json`.
-2. Verify JWT signature, `iss`, `aud`, `exp`, `scp`.
-3. Verify PoP signature against `cnf.jwk`.
-4. Map `act.sub` / `act.email` to internal customer account.
-
-### Phase 2 Payment Flow
-
-With seller integration, the payment flow upgrades from virtual cards to broker-mediated Stripe destination charges for integrated sellers:
-
-1. **Seller creates a signed PaymentRequest** (Ed25519 signature over canonical fields).
-2. **Agent creates a PurchaseIntent** referencing the PaymentRequest.
-3. **Human approves** via the same approval workflow.
-4. **Broker executes** via Stripe PaymentIntent with destination charges. No virtual card needed. Funds flow directly. Agent never sees payment credentials.
-
-### Phase 2 API Surface (Additions)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/v1/delegate/token` | Mint seller-audience delegation token (PoP required) |
-| POST | `/v1/seller/verify-domain` | Initiate domain verification |
-| POST | `/v1/seller/connect-stripe` | Start Stripe Connect onboarding |
-| POST | `/v1/seller/register-key` | Register seller Ed25519 public key |
-| POST | `/v1/seller-link-requests` | Agent initiates seller link request |
-| POST | `/v1/seller/exchange-code` | Exchange OAuth code for user identity |
-| POST | `/v1/payment-requests` | Seller creates signed payment request |
-| POST | `/v1/purchase-intents` | Agent creates purchase intent |
-| GET | `/v1/seller/transactions` | List seller transactions |
-
-### Phase 2 Data Model (Additions)
-
-```
-seller_orgs
-  id, verified_domain, stripe_account_id, seller_pubkey,
-  status (pending|active|suspended), risk_tier, created_at
-
-seller_domain_verifications
-  id, seller_id, domain, challenge_token, method (dns|https),
-  verified_at, created_at
-
-seller_links
-  id, user_id, seller_id, seller_user_ref, created_at, revoked_at
-
-seller_link_requests
-  id, agent_id, user_id, seller_id, requested_scopes[],
-  metadata (jsonb), status (pending|approved|denied|expired), created_at
-
-delegation_grants
-  id, org_id, user_id, agent_id, seller_id (nullable),
-  scopes[], constraints (jsonb), audiences[], expires_at, revoked_at
-
-consents
-  id, user_id, grant_id, seller_id, scopes[], created_at, revoked_at
-
-payment_requests
-  id, seller_id, amount, currency, description, external_ref,
-  expires_at, signature, status (active|expired|fulfilled), created_at
-
-purchase_intents
-  id, agent_id, org_id, payment_request_id, approval_event_id,
-  status (pending_approval|approved|denied|expired|completed|failed),
-  created_at
-
-stripe_objects
-  id, type (payment_intent|charge|transfer), stripe_id,
-  purchase_intent_id, data (jsonb), created_at
-```
-
-### Phase 2 Webhooks (Seller-Bound)
-
-| Event | Description |
-|---|---|
-| `payment.succeeded` | Payment captured successfully |
-| `payment.failed` | Payment failed or denied |
-| `dispute.opened` | Stripe dispute opened |
+10. **Resource naming**: Flat namespace (`denden`) or scoped (`@woong/denden`)? Scoped prevents conflicts but adds complexity. Currently flat — revisit if the registry grows.
 
 ---
 
-## Phase 3: Agent Commerce Platform (Future)
+## 11. Implementation Order
 
-Phase 3 is the full vision: a platform where agents have verified identities, sellers natively support agent commerce, and browser automation is the fallback for non-integrated services.
+Trackable checklist of every deliverable from the Implementation Plan (Section 8). Items are numbered sequentially across all phases. Status key: ⬜ Not Started · 🟡 In Progress · ✅ Complete.
 
-### Phase 3 Additions
+### Phase 1: Core CLI + Resource Format + Local Storage
 
-- **Third-party delegation identity service** -- Partners consume the identity and delegation layer without using the payment rail. Verify that an agent acts on behalf of a specific human, with specific scopes, without calling the broker on every request.
-- **Auto-approval rules** -- Trusted agents with track records can have pre-approved spending for specific merchants/categories.
-- **Recurring payment support** -- Persistent virtual cards for subscriptions (with spending limits and monthly caps).
-- **Multi-currency** -- International merchants, FX handling.
-- **Mobile app** -- Native approval experience, biometric auth.
-- **Agent marketplace** -- Directory of verified agents with reputation scores.
+#### Week 1 — Scaffolding & Parsing
+
+- ⬜ 1. Project scaffolding — Rust workspace, Cargo.toml, clap CLI skeleton with global options (`--server`, `--project`, `--verbose`, `--json`)
+- ⬜ 2. `relava.toml` parser — resource manifest format (name, type, version, description, platform, env, etc.)
+- ⬜ 3. `relava.toml` parser — project manifest format (skills, agents, commands, rules sections with name=version entries)
+- ⬜ 4. Resource validation — validate directory structure per resource type (skill needs `SKILL.md`, agent needs `<name>.md`, etc.)
+- ⬜ 5. Resource validation — validate manifest fields (semver format, required fields, valid type enum)
+
+#### Week 2 — Local Store & Core Commands
+
+- ⬜ 6. Local store directory structure — create and manage `~/.relava/store/<type>/<name>/<version>/`
+- ⬜ 7. SQLite database setup — schema creation (resources, versions, projects, installations tables), migrations
+- ⬜ 8. `relava init` — create project `relava.toml`, register project in database, scan for existing Claude Code resources
+- ⬜ 9. `relava install <type> <name>` — resolve version from local store, copy files to correct Claude Code locations — *depends on 6, 7*
+- ⬜ 10. Skill installation logic — copy `SKILL.md` + support files to `skills/<name>/`, handle multi-file directories
+- ⬜ 11. Agent/command/rule installation logic — copy `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
+- ⬜ 12. Platform binary selection — detect OS/arch, select correct binary from `[platform.*]` manifest entries — *depends on 2*
+- ⬜ 13. Installation record tracking — write installed file paths to `installations.installed_files_json` in database
+- ⬜ 14. `relava remove <type> <name>` — look up installed files, checksum comparison for user modifications, delete files, clean up empty dirs — *depends on 13*
+- ⬜ 15. `--save` flag — write resource name + version to project `relava.toml` on install, remove entry on remove — *depends on 3*
+
+#### Week 3 — Remaining CLI Commands
+
+- ⬜ 16. `relava list <type>` — list installed resources for current project with version and status (active/disabled)
+- ⬜ 17. `relava info <type> <name>` — display full resource details (description, platforms, env requirements, size)
+- ⬜ 18. `relava update <type> <name>` — download new version, diff installed files, handle user-modified files, update database — *depends on 9*
+- ⬜ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
+- ⬜ 20. `relava doctor` — check server status, database accessibility, store directory, env requirements, file integrity, manifest sync
+- ⬜ 21. `relava install relava.toml` — read project manifest, resolve all declared resources, bulk install — *depends on 3, 9*
+- ⬜ 22. `relava import <type> <path>` — scan existing resource directory, generate `relava.toml` manifest, validate structure
+- ⬜ 23. Disable/enable mechanism — rename files with `.disabled` suffix, update installation status in database
+- ⬜ 24. End-to-end integration testing — publish to local store, install into test project, list, update, remove cycle
+
+**Phase 1 Milestone**: Developer can publish a resource to local store, install it into a project, list installed resources, remove, and update — all via CLI.
 
 ---
 
-## 18. Immediate Deliverables
+### Phase 2: Local Registry Server + REST API
 
-| Deliverable | Description |
-|---|---|
-| **Stripe Issuing application** | Apply today. Parallel-apply to Lithic and Marqeta. |
-| **Legal consultation** | 30-minute consult on money transmitter classification for JIT pooled balance model |
-| **PCI scope assessment** | Can Stripe ephemeral keys deliver card details directly to agent without touching Relava servers? |
-| **Agent SDK (Python)** | Enroll, request payment authorization, retrieve card, report outcome, cancel |
-| **Developer quickstart** | End-to-end guide: enroll agent, request payment, approve, pay |
-| **PoP signing spec** | Canonical string format, signature encoding, verification rules |
-| **Database schema (SQL)** | Complete DDL for all Phase 1 MVP tables |
+#### Week 4 — Server Foundation
+
+- ⬜ 25. HTTP server scaffolding — Axum + tokio async runtime, server startup/shutdown lifecycle
+- ⬜ 26. `relava server start` / `stop` / `status` commands — daemon mode, PID management, port binding
+- ⬜ 27. Resources REST endpoints — `GET /resources`, `GET /resources/:type/:name`, `POST /resources/:type/:name`, `DELETE /resources/:type/:name` — *depends on 25*
+- ⬜ 28. Resource versions REST endpoints — `GET /resources/:type/:name/versions`, `GET /resources/:type/:name/versions/:version` — *depends on 27*
+- ⬜ 29. Projects REST endpoints — `GET /projects`, `POST /projects`, `GET /projects/:id`, `DELETE /projects/:id`, `GET /projects/:id/installations` — *depends on 25*
+- ⬜ 30. CLI refactor — detect running server, use REST API when available, fall back to direct SQLite mode when not — *depends on 27, 29*
+
+#### Week 5 — Server Features & Publish
+
+- ⬜ 31. Installation REST endpoints — `POST /projects/:id/install`, `DELETE /projects/:id/install/:type/:name`, `PUT` (update), disable/enable — *depends on 29*
+- ⬜ 32. Search endpoint with SQLite FTS5 — `GET /resources?q=search&type=skill`, full-text indexing of name + description + keywords
+- ⬜ 33. `relava search <query>` CLI command — search resources via server API — *depends on 32*
+- ⬜ 34. Health and stats endpoints — `GET /health`, `GET /stats` (resource count, project count, install count)
+- ⬜ 35. `relava publish <type> <name>` — read manifest, validate, upload directory contents to server, store in `~/.relava/store/` — *depends on 27*
+- ⬜ 36. `relava publish <type> <name> --path PATH` — publish from custom source directory — *depends on 35*
+- ⬜ 37. Static file serving — server serves files from GUI directory for future web app — *depends on 25*
+
+**Phase 2 Milestone**: CLI works against the running server. All operations available via REST API. Resources are published and installed through the server.
+
+---
+
+### Phase 3: GUI
+
+#### Week 6 — App Shell & Dashboard
+
+- ⬜ 38. React app scaffolding — Vite + Tailwind CSS + TanStack Query, project structure, API client setup
+- ⬜ 39. App shell — navigation header (Dashboard, Browse, Settings), layout components, routing
+- ⬜ 40. Dashboard page — overview of registered projects, quick stats (total resources, updates available), recent activity
+- ⬜ 41. Project list view — list all registered projects with resource counts
+- ⬜ 42. Project detail view — installed resources grouped by type (skills, agents, commands, rules), per-resource status badges — *depends on 41*
+
+#### Week 7 — Resource Browser & Details
+
+- ⬜ 43. Resource browser page — search input, type filter (skill/agent/command/rule), sort options, resource cards with description and version — *depends on 38*
+- ⬜ 44. Resource detail page — full README rendered as markdown (react-markdown), version history, file list, env/MCP requirements
+- ⬜ 45. Install action from GUI — project selector, version selector, install button with progress feedback — *depends on 31, 44*
+- ⬜ 46. Remove action from GUI — confirmation dialog, removal with feedback — *depends on 31, 42*
+
+#### Week 8 — Settings & Polish
+
+- ⬜ 47. Settings page — server configuration (port, data directory), default install options, cache size and cleanup
+- ⬜ 48. Disable/enable toggle in project view — toggle switch per resource, immediate API call — *depends on 42*
+- ⬜ 49. Update flow in GUI — show available updates, diff preview, one-click update — *depends on 42*
+- ⬜ 50. GUI build pipeline — production build, embed static assets into Rust binary (or serve from `~/.relava/gui/`)
+- ⬜ 51. Responsive design pass — ensure usable at various viewport sizes, visual polish
+
+**Phase 3 Milestone**: Developer can manage all resources through a web GUI at `localhost:7420`.
+
+---
+
+### Phase 4: Advanced Features (Weeks 9+)
+
+No week assignments — each feature is an independent work item.
+
+- ⬜ 52. Hook installation — read `settings.json`, merge hook definitions into event arrays (PreToolUse, PostToolUse, etc.), record entries for clean removal
+- ⬜ 53. Hook removal — remove specific hook entries from `settings.json`, handle concurrent user edits
+- ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `relava.toml` and `.md` files
+- ⬜ 55. Project scaffolding — `relava new project <name>` creates project directory with `relava.toml`, `.claude/` structure
+- ⬜ 56. Auto-update notifications — check for newer versions of installed resources on server start or periodic interval, surface in CLI and GUI
+- ⬜ 57. CLAUDE.md auto-management — add/remove skill references in `CLAUDE.md` during install/remove
+- ⬜ 58. Version conflict resolution — detect and resolve conflicts when multiple resources or manual edits create version mismatches
+- ⬜ 59. Cache management and cleanup — `relava cache clean`, automatic eviction policy, disk usage reporting
+
+---
+
+## Appendix A: Claude Code Resource Locations Reference
+
+| Resource | Location | Discovery |
+|----------|----------|-----------|
+| Skills | `./skills/<name>/SKILL.md` or `~/.claude/skills/<name>/SKILL.md` | Auto-discovered by Claude Code |
+| Agents | `.claude/agents/<name>.md` | Available via `/agents` command |
+| Commands | `.claude/commands/<name>.md` | Available via `/<name>` command |
+| Rules | `.claude/rules/<name>.md` | Auto-loaded into every conversation |
+| Hooks | `.claude/settings.json` → `hooks` object | Auto-executed on matching events |
+| Env vars | `.claude/settings.json` → `env` object | Injected into Claude session |
+| Permissions | `.claude/settings.json` → `permissions` object | Controls tool access |
+
+## Appendix B: Comparison with Existing Tools
+
+| Feature | npm | brew | Relava |
+|---------|-----|------|--------|
+| Package format | package.json + node_modules | Formula (Ruby DSL) | relava.toml + directory |
+| Registry | npmjs.com | Homebrew/core | Local server |
+| Install target | node_modules/ | /usr/local/ | .claude/ + skills/ |
+| Platform binaries | Not native | Native | Native |
+| GUI | npmjs.com (web) | None | Built-in local web GUI |
+| Manifest | package.json | Brewfile | relava.toml |
+| Scope | JS packages | System software | Claude Code artifacts |
+| Bundling | tar.gz via npm pack | Source build | None (directory as-is) |
+
+Relava is closest in spirit to **brew** (installing self-contained resources into known locations) but with **npm**'s project-level manifest and version pinning via `relava.toml`.

@@ -138,4 +138,4 @@ All state lives in `~/.relava/` -- published resource files, the SQLite database
 
 ## Status
 
-Relava is in the design and planning phase. See [PLAN.md](PLAN.md) for the full design document and implementation roadmap.
+Relava is in the design and planning phase. See [DESIGN.md](DESIGN.md) for the full design document and implementation roadmap.
