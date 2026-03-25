@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 relava-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
