@@ -1,5 +1,5 @@
 use super::models::{Resource, Version};
-use crate::validate::ResourceType;
+use relava_types::validate::ResourceType;
 
 /// Errors from store operations.
 #[derive(Debug)]

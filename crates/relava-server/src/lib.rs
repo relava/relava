@@ -1,3 +1,5 @@
+pub mod store;
+
 use axum::{Router, routing::get};
 
 /// Build the Relava API router.

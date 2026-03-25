@@ -1,0 +1,10 @@
+[package]
+name = "relava-server-ext"
+description = "Cloud and enterprise extensions for the Relava server"
+version.workspace = true
+edition.workspace = true
+license = "Elastic-2.0"
+
+[dependencies]
+relava-server = { path = "../relava-server" }
+relava-types = { path = "../relava-types" }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use crate::manifest::ToolSpec;
+use relava_types::manifest::ToolSpec;
 
 /// Status of a tool check/install attempt.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

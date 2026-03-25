@@ -3,19 +3,21 @@ name = "relava-cli"
 description = "CLI binary for Relava — a local package manager for Claude Code prompt-layer artifacts"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 
 [[bin]]
 name = "relava"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 clap.workspace = true
 dirs.workspace = true
-relava-core.workspace = true
+relava-types = { path = "../relava-types" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 tempfile = "3"

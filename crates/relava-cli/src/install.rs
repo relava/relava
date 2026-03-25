@@ -1,13 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use relava_core::cache::DownloadCache;
-use relava_core::env_check::{self, EnvResult, EnvStatus};
-use relava_core::manifest::ResourceMeta;
-use relava_core::registry::RegistryClient;
-use relava_core::store::RelavaDir;
-use relava_core::tools::{self, ToolResult, ToolStatus};
-use relava_core::validate::{self, AgentType, ResourceType};
-use relava_core::version::Version;
+use crate::cache::DownloadCache;
+use crate::env_check::{self, EnvResult, EnvStatus};
+use crate::registry::RegistryClient;
+use crate::tools::{self, ToolResult, ToolStatus};
+use relava_types::manifest::ResourceMeta;
+use relava_types::validate::{self, AgentType, ResourceType};
+use relava_types::version::Version;
 
 /// Options for the install command.
 pub struct InstallOpts<'a> {
@@ -60,9 +59,11 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     };
 
     // Set up cache
-    let relava_dir = RelavaDir::default_location()
-        .ok_or_else(|| "cannot determine home directory for cache".to_string())?;
-    let cache = DownloadCache::new(relava_dir.cache_dir());
+    let cache_dir = dirs::home_dir()
+        .ok_or_else(|| "cannot determine home directory for cache".to_string())?
+        .join(".relava")
+        .join("cache");
+    let cache = DownloadCache::new(cache_dir);
 
     // Connect to registry and resolve version
     let client = RegistryClient::new(opts.server_url);
@@ -354,8 +355,8 @@ pub fn parse_resource_type(s: &str) -> Result<ResourceType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relava_core::cache::DownloadCache;
-    use relava_core::registry::{DownloadFile, DownloadResponse};
+    use crate::cache::DownloadCache;
+    use crate::registry::{DownloadFile, DownloadResponse};
     use std::fs;
     use tempfile::TempDir;
 

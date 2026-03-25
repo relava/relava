@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::validate::ResourceType;
+use relava_types::validate::ResourceType;
 
 /// Manages the `~/.relava/` directory structure.
 ///

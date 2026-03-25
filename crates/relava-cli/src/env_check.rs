@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::manifest::EnvSpec;
+use relava_types::manifest::EnvSpec;
 
 /// Status of an env var check.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

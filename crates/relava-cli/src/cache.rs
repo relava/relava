@@ -4,8 +4,8 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use crate::registry::DownloadResponse;
-use crate::validate::ResourceType;
-use crate::version::Version;
+use relava_types::validate::ResourceType;
+use relava_types::version::Version;
 
 /// Manages a download cache at `~/.relava/cache/`.
 ///

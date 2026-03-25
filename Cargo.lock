@@ -1082,26 +1082,12 @@ dependencies = [
  "base64",
  "clap",
  "dirs",
- "relava-core",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "relava-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "dirs",
+ "relava-types",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "tempfile",
- "toml",
 ]
 
 [[package]]
@@ -1109,9 +1095,28 @@ name = "relava-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "relava-core",
+ "dirs",
+ "relava-types",
+ "rusqlite",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "relava-server-ext"
+version = "0.1.0"
+dependencies = [
+ "relava-server",
+ "relava-types",
+]
+
+[[package]]
+name = "relava-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "toml",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::models::{Resource, Version};
 use super::traits::{ResourceStore, StoreError};
-use crate::validate::ResourceType;
+use relava_types::validate::ResourceType;
 
 /// Shorthand: convert a `rusqlite::Error` into `StoreError::Database`.
 fn db_err(e: rusqlite::Error) -> StoreError {

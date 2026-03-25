@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::validate::ResourceType;
-use crate::version::{Version, VersionConstraint, VersionError};
+use relava_types::validate::ResourceType;
+use relava_types::version::{Version, VersionConstraint, VersionError};
 
 /// Errors from registry operations.
 #[derive(Debug)]

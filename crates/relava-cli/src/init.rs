@@ -46,7 +46,7 @@ pub fn run(project_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relava_core::manifest::ProjectManifest;
+    use relava_types::manifest::ProjectManifest;
     use std::fs;
     use tempfile::TempDir;
 
