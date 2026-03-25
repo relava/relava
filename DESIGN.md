@@ -289,6 +289,29 @@ CREATE TABLE versions (
 
 The server does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
 
+### Future: Enterprise Scoping & Permissions
+
+Not implemented in MVP, but the schema and API are designed to accommodate:
+
+**Scope types:**
+- **Personal** (`@alice/code-review`) — owned by a user, visible only to them or explicitly shared
+- **Team** (`@platform-team/deploy-check`) — owned by a team, visible to team members
+- **Global** (no scope, `code-review`) — the current MVP behavior, visible to all
+
+**Users & permissions (future tables, not created in MVP):**
+```sql
+-- Reserved for enterprise extension
+-- CREATE TABLE users (id, username, email, created_at);
+-- CREATE TABLE teams (id, name, created_at);
+-- CREATE TABLE team_members (team_id, user_id, role);  -- role: 'admin' | 'member' | 'reader'
+-- CREATE TABLE resource_permissions (resource_id, scope_type, scope_id, permission);  -- permission: 'read' | 'write'
+```
+
+**Design constraints for MVP code:**
+- The `scope` column on `resources` is nullable — `NULL` means global (current behavior)
+- API paths should accept an optional scope prefix: `/resources/:type/:name` (global) and `/resources/:type/@:scope/:name` (scoped) — only the global form is implemented now
+- Resource slugs remain flat within a scope — `@team/foo` and `@user/foo` can coexist
+
 ### REST API
 
 Base URL: `http://localhost:7420/api/v1`
