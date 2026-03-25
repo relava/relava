@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use crate::registry::DownloadResponse;
@@ -48,6 +49,7 @@ impl DownloadCache {
     /// Store a download response in the cache.
     ///
     /// Returns the list of relative file paths that were cached.
+    /// Rejects paths that are absolute or contain `..` components (path traversal).
     pub fn store(
         &self,
         resource_type: ResourceType,
@@ -55,19 +57,27 @@ impl DownloadCache {
         version: &Version,
         response: &DownloadResponse,
     ) -> Result<Vec<String>, CacheError> {
+        if response.files.is_empty() {
+            return Err(CacheError::Decode("download contains no files".to_string()));
+        }
+
         let dir = self.version_dir(resource_type, name, version);
         std::fs::create_dir_all(&dir).map_err(CacheError::Io)?;
 
         let mut paths = Vec::new();
         for file in &response.files {
+            validate_relative_path(&file.path)?;
+
             let dest = dir.join(&file.path);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(CacheError::Io)?;
             }
 
-            let content = base64_decode(&file.content).map_err(|e| {
-                CacheError::Decode(format!("failed to decode {}: {}", file.path, e))
-            })?;
+            let content = base64::engine::general_purpose::STANDARD
+                .decode(&file.content)
+                .map_err(|e| {
+                    CacheError::Decode(format!("failed to decode {}: {}", file.path, e))
+                })?;
 
             std::fs::write(&dest, &content).map_err(CacheError::Io)?;
             paths.push(file.path.clone());
@@ -109,6 +119,19 @@ impl DownloadCache {
     }
 }
 
+/// Validate that a file path is relative and contains no parent directory components.
+/// Prevents path traversal attacks from malicious registry responses.
+fn validate_relative_path(path: &str) -> Result<(), CacheError> {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return Err(CacheError::Decode(format!("unsafe file path: {path}")));
+    }
+    if p.components().any(|c| c == Component::ParentDir) {
+        return Err(CacheError::Decode(format!("unsafe file path: {path}")));
+    }
+    Ok(())
+}
+
 /// Collect all file paths relative to `base` by walking `dir`.
 fn collect_relative_paths(dir: &Path, base: &Path) -> Result<Vec<String>, CacheError> {
     let mut result = Vec::new();
@@ -134,53 +157,6 @@ pub fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
-}
-
-/// Decode base64-encoded content.
-fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    // Simple base64 decoder (standard alphabet + padding)
-    // Using a minimal implementation to avoid adding another dependency
-    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut lookup = [255u8; 256];
-    for (i, &b) in alphabet.iter().enumerate() {
-        lookup[b as usize] = i as u8;
-    }
-
-    let input: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !input.len().is_multiple_of(4) {
-        return Err("invalid base64 length".to_string());
-    }
-
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    for chunk in input.chunks(4) {
-        let mut buf = [0u8; 4];
-        let mut pad = 0;
-        for (i, &b) in chunk.iter().enumerate() {
-            if b == b'=' {
-                pad += 1;
-                buf[i] = 0;
-            } else {
-                let val = lookup[b as usize];
-                if val == 255 {
-                    return Err(format!("invalid base64 character: {}", b as char));
-                }
-                buf[i] = val;
-            }
-        }
-        let combined =
-            (buf[0] as u32) << 18 | (buf[1] as u32) << 12 | (buf[2] as u32) << 6 | buf[3] as u32;
-        output.push((combined >> 16) as u8);
-        if pad < 2 {
-            output.push((combined >> 8) as u8);
-        }
-        if pad < 1 {
-            output.push(combined as u8);
-        }
-    }
-    Ok(output)
 }
 
 #[derive(Debug)]
@@ -219,40 +195,7 @@ mod tests {
     }
 
     fn encode_base64(data: &[u8]) -> String {
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut result = String::new();
-        for chunk in data.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-            let combined = (b0 << 16) | (b1 << 8) | b2;
-            result.push(alphabet[(combined >> 18) as usize & 0x3f] as char);
-            result.push(alphabet[(combined >> 12) as usize & 0x3f] as char);
-            if chunk.len() > 1 {
-                result.push(alphabet[(combined >> 6) as usize & 0x3f] as char);
-            } else {
-                result.push('=');
-            }
-            if chunk.len() > 2 {
-                result.push(alphabet[combined as usize & 0x3f] as char);
-            } else {
-                result.push('=');
-            }
-        }
-        result
-    }
-
-    #[test]
-    fn base64_roundtrip() {
-        let data = b"Hello, world!";
-        let encoded = encode_base64(data);
-        let decoded = base64_decode(&encoded).unwrap();
-        assert_eq!(decoded, data);
-    }
-
-    #[test]
-    fn base64_empty() {
-        assert_eq!(base64_decode("").unwrap(), Vec::<u8>::new());
+        base64::engine::general_purpose::STANDARD.encode(data)
     }
 
     #[test]
@@ -327,5 +270,56 @@ mod tests {
             cache.version_dir(ResourceType::Agent, "debugger", &v),
             PathBuf::from("/tmp/cache/agents/debugger/1.2.3")
         );
+    }
+
+    #[test]
+    fn rejects_path_traversal_parent_dir() {
+        let (_root, cache) = test_cache();
+        let v = Version::parse("1.0.0").unwrap();
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "evil".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "../../.bashrc".to_string(),
+                content: encode_base64(b"malicious"),
+            }],
+        };
+        let result = cache.store(ResourceType::Skill, "evil", &v, &response);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsafe file path"));
+    }
+
+    #[test]
+    fn rejects_absolute_path() {
+        let (_root, cache) = test_cache();
+        let v = Version::parse("1.0.0").unwrap();
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "evil".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![DownloadFile {
+                path: "/etc/passwd".to_string(),
+                content: encode_base64(b"malicious"),
+            }],
+        };
+        let result = cache.store(ResourceType::Skill, "evil", &v, &response);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsafe file path"));
+    }
+
+    #[test]
+    fn rejects_empty_file_list() {
+        let (_root, cache) = test_cache();
+        let v = Version::parse("1.0.0").unwrap();
+        let response = DownloadResponse {
+            resource_type: "skill".to_string(),
+            name: "empty".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec![],
+        };
+        let result = cache.store(ResourceType::Skill, "empty", &v, &response);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no files"));
     }
 }

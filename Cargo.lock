@@ -1079,6 +1079,7 @@ dependencies = [
 name = "relava-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "dirs",
  "relava-core",
@@ -1091,6 +1092,7 @@ dependencies = [
 name = "relava-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "dirs",
  "reqwest",
  "rusqlite",

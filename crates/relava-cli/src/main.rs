@@ -70,21 +70,22 @@ fn main() {
             match install::run(&opts) {
                 Ok(result) => {
                     if cli.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&result).unwrap_or_default()
-                        );
+                        match serde_json::to_string_pretty(&result) {
+                            Ok(json) => println!("{json}"),
+                            Err(e) => {
+                                eprintln!("failed to serialize result: {e}");
+                                std::process::exit(1);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
                     if cli.json {
-                        let err_json = serde_json::json!({
-                            "error": e,
-                        });
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&err_json).unwrap_or_default()
-                        );
+                        let err_json = serde_json::json!({ "error": e });
+                        match serde_json::to_string_pretty(&err_json) {
+                            Ok(json) => println!("{json}"),
+                            Err(se) => eprintln!("failed to serialize error: {se}: {e}"),
+                        }
                     } else {
                         eprintln!("{e}");
                     }

@@ -12,6 +12,7 @@ edition = "2024"
 license = "Elastic-2.0"
 
 [workspace.dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 rusqlite = { version = "0.34", features = ["bundled"] }

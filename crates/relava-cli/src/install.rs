@@ -146,6 +146,13 @@ fn write_to_project(
         .list_files(resource_type, name, version)
         .map_err(|e| e.to_string())?;
 
+    if file_paths.is_empty() {
+        return Err(format!(
+            "download for {} {}@{} contains no files",
+            resource_type, name, version
+        ));
+    }
+
     // Skills install into a named subdirectory; other types into a flat type directory
     let install_dir = match resource_type {
         ResourceType::Skill => project_root.join(agent_type.skills_dir()).join(name),
@@ -175,14 +182,14 @@ fn write_to_project(
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
             // Single-file resource: write as <name>.md
-            if let Some(source_path) = file_paths.first() {
-                let content = cache
-                    .read_file(resource_type, name, version, source_path)
-                    .map_err(|e| e.to_string())?;
-                let dest = install_dir.join(format!("{name}.md"));
-                std::fs::write(&dest, &content)
-                    .map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
-            }
+            // file_paths is guaranteed non-empty by the check above
+            let source_path = &file_paths[0];
+            let content = cache
+                .read_file(resource_type, name, version, source_path)
+                .map_err(|e| e.to_string())?;
+            let dest = install_dir.join(format!("{name}.md"));
+            std::fs::write(&dest, &content)
+                .map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
         }
     }
 
@@ -207,27 +214,8 @@ mod tests {
     }
 
     fn encode_base64(data: &[u8]) -> String {
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut result = String::new();
-        for chunk in data.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-            let combined = (b0 << 16) | (b1 << 8) | b2;
-            result.push(alphabet[(combined >> 18) as usize & 0x3f] as char);
-            result.push(alphabet[(combined >> 12) as usize & 0x3f] as char);
-            if chunk.len() > 1 {
-                result.push(alphabet[(combined >> 6) as usize & 0x3f] as char);
-            } else {
-                result.push('=');
-            }
-            if chunk.len() > 2 {
-                result.push(alphabet[combined as usize & 0x3f] as char);
-            } else {
-                result.push('=');
-            }
-        }
-        result
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(data)
     }
 
     fn setup_cache_with_skill(cache_dir: &Path) -> DownloadCache {
