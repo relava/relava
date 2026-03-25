@@ -102,6 +102,8 @@ This design choice is deliberate:
 
 Dependencies are declared in the `metadata.relava` block of a resource's `.md` frontmatter. This follows the [Agent Skills specification](https://agentskills.io/specification), which defines `metadata` as an open-ended extension point for custom fields. Claude Code and other agent products ignore unknown metadata keys.
 
+Frontmatter dependencies are **names only** — no version pins. Version control belongs at the project level (`relava.toml`), not the resource level. This keeps frontmatter simple and allows `relava update` to pull latest versions without conflicting pins.
+
 **Skill example** (`SKILL.md`):
 ```yaml
 ---
@@ -110,8 +112,8 @@ description: Comprehensive code review with security and style checks
 metadata:
   relava:
     skills:
-      - security-baseline: "1.0.0"
-      - style-guide: "0.3.0"
+      - security-baseline
+      - style-guide
 ---
 ```
 
@@ -125,16 +127,16 @@ model: sonnet
 metadata:
   relava:
     skills:
-      - notify-slack: "0.3.0"
-      - code-review: "1.0.0"
+      - notify-slack
+      - code-review
     agents:
-      - debugger: "0.5.0"
+      - debugger
 ---
 ```
 
-On `relava install`, the CLI parses the `metadata.relava` block from the resource's `.md` file to discover and recursively install transitive dependencies.
+On `relava install`, the CLI parses the `metadata.relava` block from the resource's `.md` file to discover and recursively install transitive dependencies. Each dependency resolves to the version pinned in the project's `relava.toml`, or the latest version in the registry if not pinned.
 
-There is no separate `relava.toml` per resource — all dependency information lives in the frontmatter. The project-level `relava.toml` (see below) declares what's installed at the project level.
+There is no separate `relava.toml` per resource — all dependency information lives in the frontmatter. The project-level `relava.toml` (see below) is where versions are pinned.
 
 ### Resource Naming (Slug Format)
 

@@ -8,6 +8,9 @@ use std::path::Path;
 
 /// Dependencies extracted from a resource's .md frontmatter.
 ///
+/// Frontmatter dependencies are names only — no version pins.
+/// Version control belongs at the project level (relava.toml).
+///
 /// Example frontmatter:
 /// ```yaml
 /// ---
@@ -16,17 +19,18 @@ use std::path::Path;
 /// metadata:
 ///   relava:
 ///     skills:
-///       - notify-slack: "0.3.0"
+///       - notify-slack
+///       - code-review
 ///     agents:
-///       - debugger: "0.5.0"
+///       - debugger
 /// ---
 /// ```
 #[derive(Debug, Default, PartialEq)]
 pub struct ResourceDeps {
-    /// Skill dependencies: name -> version constraint
-    pub skills: BTreeMap<String, String>,
-    /// Agent dependencies: name -> version constraint
-    pub agents: BTreeMap<String, String>,
+    /// Skill dependency names
+    pub skills: Vec<String>,
+    /// Agent dependency names
+    pub agents: Vec<String>,
 }
 
 /// Full frontmatter structure for deserializing .md files.
@@ -45,9 +49,9 @@ struct MetadataBlock {
 #[derive(Debug, Deserialize)]
 struct RelavaBlock {
     #[serde(default)]
-    skills: Vec<serde_yaml::Value>,
+    skills: Vec<String>,
     #[serde(default)]
-    agents: Vec<serde_yaml::Value>,
+    agents: Vec<String>,
 }
 
 /// Extract the YAML frontmatter string from markdown content.
@@ -60,22 +64,6 @@ fn extract_frontmatter(content: &str) -> Option<&str> {
     let after_open = &trimmed[3..];
     let end = after_open.find("\n---")?;
     Some(&after_open[..end])
-}
-
-/// Parse a dependency list item. Supports two formats:
-/// - `- name: "version"` (map with one key)
-/// - `- name` (bare string, defaults to `"*"`)
-fn parse_dep_item(value: &serde_yaml::Value) -> Option<(String, String)> {
-    match value {
-        serde_yaml::Value::Mapping(map) => {
-            let (k, v) = map.iter().next()?;
-            let name = k.as_str()?.to_string();
-            let version = v.as_str()?.to_string();
-            Some((name, version))
-        }
-        serde_yaml::Value::String(name) => Some((name.clone(), "*".to_string())),
-        _ => None,
-    }
 }
 
 impl ResourceDeps {
@@ -94,21 +82,10 @@ impl ResourceDeps {
             None => return Ok(Self::default()),
         };
 
-        let mut skills = BTreeMap::new();
-        for item in &relava.skills {
-            if let Some((name, version)) = parse_dep_item(item) {
-                skills.insert(name, version);
-            }
-        }
-
-        let mut agents = BTreeMap::new();
-        for item in &relava.agents {
-            if let Some((name, version)) = parse_dep_item(item) {
-                agents.insert(name, version);
-            }
-        }
-
-        Ok(Self { skills, agents })
+        Ok(Self {
+            skills: relava.skills,
+            agents: relava.agents,
+        })
     }
 
     /// Parse dependencies from a .md file on disk.
@@ -231,15 +208,13 @@ description: Code review skill
 metadata:
   relava:
     skills:
-      - notify-slack: "0.3.0"
-      - style-guide: "1.0.0"
+      - notify-slack
+      - style-guide
 ---
 Instructions here.
 "#;
         let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills.len(), 2);
-        assert_eq!(deps.skills["notify-slack"], "0.3.0");
-        assert_eq!(deps.skills["style-guide"], "1.0.0");
+        assert_eq!(deps.skills, vec!["notify-slack", "style-guide"]);
         assert!(deps.agents.is_empty());
     }
 
@@ -251,14 +226,13 @@ description: Orchestrator agent
 metadata:
   relava:
     agents:
-      - debugger: "0.5.0"
+      - debugger
 ---
 Body.
 "#;
         let deps = ResourceDeps::from_md(md).unwrap();
         assert!(deps.skills.is_empty());
-        assert_eq!(deps.agents.len(), 1);
-        assert_eq!(deps.agents["debugger"], "0.5.0");
+        assert_eq!(deps.agents, vec!["debugger"]);
     }
 
     #[test]
@@ -269,28 +243,14 @@ description: Full orchestrator
 metadata:
   relava:
     skills:
-      - notify-slack: "0.3.0"
-    agents:
-      - debugger: "0.5.0"
----
-"#;
-        let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills.len(), 1);
-        assert_eq!(deps.agents.len(), 1);
-    }
-
-    #[test]
-    fn deps_bare_name_defaults_to_star() {
-        let md = r#"---
-name: test
-metadata:
-  relava:
-    skills:
       - notify-slack
+    agents:
+      - debugger
 ---
 "#;
         let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills["notify-slack"], "*");
+        assert_eq!(deps.skills, vec!["notify-slack"]);
+        assert_eq!(deps.agents, vec!["debugger"]);
     }
 
     #[test]
@@ -301,14 +261,13 @@ metadata:
   author: someone
   relava:
     skills:
-      - foo: "1.0.0"
+      - foo
   other-tool:
     key: value
 ---
 "#;
         let deps = ResourceDeps::from_md(md).unwrap();
-        assert_eq!(deps.skills.len(), 1);
-        assert_eq!(deps.skills["foo"], "1.0.0");
+        assert_eq!(deps.skills, vec!["foo"]);
     }
 
     // -- ProjectManifest (TOML) tests --
