@@ -4,98 +4,59 @@ A local package manager and registry for Claude Code resources.
 
 ## What is Relava?
 
-Claude Code's extension model is file-based -- skills are directories, agents, commands, and rules are `.md` files, hooks live in `settings.json`. There is no built-in package manager, no versioning, no discovery. Developers manually copy files between projects.
+Claude Code's extension model is file-based -- skills are directories, agents, commands, and rules are `.md` files. There is no built-in package manager, no versioning, no dependency tracking, no discovery. Developers manually copy files between projects.
 
-Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `npm` manages JavaScript packages or `brew` manages system software -- but everything runs locally on your machine with no cloud dependency.
+Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `npm` manages JavaScript packages -- but everything runs locally on your machine.
 
 ## Key Features
 
-- **Individual resource management** -- install, update, and remove skills, agents, commands, and rules independently
-- **Versioning** -- semantic versioning with pinned versions per project; multiple versions stored locally
+- **Install & manage** skills, agents, commands, and rules with a single CLI
+- **Semantic versioning** with pinned versions per project (`"1.2.0"` or `"*"` for latest)
+- **Dependency resolution** -- resources declare dependencies in `metadata.relava` frontmatter; Relava installs them transitively
 - **Declarative manifest** -- `relava.toml` declares your project's resources, committable to version control
-- **Local registry** -- a local server stores published resources with a web GUI for browsing and management
-- **CLI** -- scriptable command-line interface for all operations
-- **Multi-project** -- manage different resource sets across different projects
-- **Non-invasive** -- Relava writes to standard Claude Code locations; remove Relava and your resources still work
+- **Multi-platform** -- `agent_type` field supports Claude Code (MVP), with Codex and Gemini CLI planned
+- **Registry server** -- local HTTP server with REST API, web GUI for browsing, and SQLite metadata
+- **Non-invasive** -- writes to standard `.claude/` locations; remove Relava and your resources still work
+- **Enterprise-ready architecture** -- REST-first design, storage abstraction traits, future support for SSO, scoping, and registry federation
 
-## CLI Usage
-
-All commands follow the pattern: `relava <verb> <resource-type> <resource-name>`
-
-### Install resources
+## Quick Start
 
 ```bash
-# Install a skill into the current project
-relava install skill denden
-
-# Install and save to relava.toml
-relava install skill denden --save
-
-# Install a specific version
-relava install skill notify-slack --version 0.2.0 --save
-
-# Install an agent
-relava install agent debugger --save
-
-# Install a command
-relava install command commit --save
-
-# Install a rule
-relava install rule no-console-log
-```
-
-### Install from manifest
-
-```bash
-# Install all resources declared in relava.toml (like npm install)
-relava install relava.toml
-```
-
-### Other commands
-
-```bash
-# List installed resources by type
-relava list skills
-relava list agents
-
-# Search the local registry
-relava search notify
-
-# View resource details
-relava info skill denden
-
-# Update a resource
-relava update skill denden
-relava update --all
-
-# Remove a resource
-relava remove skill denden --save
-
-# Publish to local registry
-relava publish skill my-skill
-
-# Start the local server
+# Start the registry server
 relava server start --daemon
 
-# Check installation health
+# Initialize a project
+relava init
+
+# Install resources
+relava install skill denden --save
+relava install agent debugger --save
+
+# Install all resources from manifest
+relava install relava.toml
+
+# Search, list, update
+relava search notify
+relava list skills
+relava update --all
+
+# Publish to registry
+relava publish skill my-skill
+
+# Check health
 relava doctor
 ```
 
-## The `--save` Flag
-
-- **Without `--save`**: downloads and installs resource files, but does not modify `relava.toml`
-- **With `--save`**: same as above, plus writes the resource name and pinned version to `relava.toml`
-
-This mirrors `npm install --save`. The `relava.toml` file is the declarative manifest you commit to version control so collaborators can run `relava install relava.toml` to reproduce the same setup.
-
 ## `relava.toml`
 
-A project-level manifest that declares installed resources with explicit versions:
+The project manifest declares the target platform and installed resources:
 
 ```toml
+agent_type = "claude"
+
 [skills]
 denden = "1.2.0"
-notify-slack = "0.3.0"
+notify-slack = "*"
 
 [agents]
 debugger = "0.5.0"
@@ -107,35 +68,86 @@ commit = "0.2.0"
 no-console-log = "1.0.0"
 ```
 
-This file is user-editable. Relava reads it but only writes to it when `--save` is used.
+- `agent_type` -- target platform (`"claude"`, future: `"codex"`, `"gemini"`)
+- Version constraints: `"X.Y.Z"` (exact pin) or `"*"` (latest)
+- User-editable; Relava only writes to it with `--save`
+- Commit to version control so collaborators can run `relava install relava.toml`
+
+## Resource Dependencies
+
+Dependencies are declared in the resource's `.md` frontmatter using `metadata.relava`, following the [Agent Skills specification](https://agentskills.io/specification):
+
+```yaml
+---
+name: orchestrator
+description: Coordinates feature development
+tools: Agent, Glob, Grep, Read
+model: sonnet
+metadata:
+  relava:
+    skills:
+      - notify-slack
+      - code-review
+    agents:
+      - debugger
+---
+```
+
+Relava parses these and recursively installs all transitive dependencies. Dependency names only -- version pinning is at the project level (`relava.toml`).
+
+## Install Locations
+
+All resources install under `.claude/` in the project:
+
+| Type | Location |
+|------|----------|
+| Skills | `.claude/skills/<name>/SKILL.md` |
+| Agents | `.claude/agents/<name>.md` |
+| Commands | `.claude/commands/<name>.md` |
+| Rules | `.claude/rules/<name>.md` |
+
+For `--global`, resources install to `~/.claude/` instead.
 
 ## Architecture
 
-Relava has three components, all running on your machine:
+```
+CLI (relava) ──REST──> Registry Server (localhost:7420)
+     │                       │
+     │                  Resource Store (~/.relava/store/)
+     │                  SQLite Metadata DB
+     │                  Web GUI
+     v
+Project Filesystem (.claude/)
+```
 
-- **CLI** (`relava`) -- Rust binary for all command-line operations
-- **Local Server** -- HTTP server (port 7420) that stores published resources, manages a SQLite metadata database, and serves the GUI
-- **GUI** -- web application at `localhost:7420` for browsing, searching, and managing resources
+- **Registry Server** -- pure resource registry. Stores published resources, serves them via REST API. Does not track projects.
+- **CLI** -- reads `relava.toml`, fetches resources from server, writes files to the project. All project management is local.
+- **GUI** -- web app at `localhost:7420` for browsing and searching the registry.
 
-The CLI talks to the server via REST API. For basic operations, the CLI can work directly against the local SQLite database when the server isn't running.
+The CLI always talks to the server via REST API. Switching from local (`localhost:7420`) to an enterprise registry is just a URL change.
 
-All state lives in `~/.relava/` -- published resource files, the SQLite database, and configuration.
+## Enterprise Extensibility
 
-## Design Principles
+The MVP is local-first, but the architecture is designed for enterprise:
 
-1. **Local-first** -- everything works offline, no account required
-2. **Prompt-layer only** -- manages text and files injected into Claude's context, not infrastructure (no MCP servers, runtimes, or databases)
-3. **Non-invasive** -- writes files to standard Claude Code locations; resources work with or without Relava
-4. **Individual resources** -- no bundling or archive step; each resource is published and installed independently
+- **Scoping** -- personal (`@user/name`), team (`@team/name`), and global namespaces with permissions
+- **Auth & SSO** -- API tokens, OIDC, SAML support planned
+- **Registry federation** -- `[registries]` in `relava.toml` for multi-registry resolution
+- **Storage abstraction** -- `ResourceStore`, `BlobStore`, `SearchBackend` traits for swapping SQLite/filesystem to PostgreSQL/S3/vector search
+- **Semantic search** -- hybrid vector + text search via embeddings
+- **Audit logging, webhooks, offline bundles** -- documented in DESIGN.md
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| CLI | Rust, clap |
-| Server | Rust, Axum, SQLite (rusqlite) |
+| CLI + Server | Rust, clap, Axum, SQLite |
 | GUI | React, Vite, Tailwind CSS, TanStack Query |
 
 ## Status
 
-Relava is in the design and planning phase. See [DESIGN.md](DESIGN.md) for the full design document and implementation roadmap.
+Relava is in active development. Week 1 (scaffolding, parsers, validation) is complete. See [DESIGN.md](DESIGN.md) for the full design document and implementation roadmap.
+
+## License
+
+[Elastic License 2.0 (ELv2)](LICENSE) -- free for personal and commercial use. Cannot be offered as a managed service.
