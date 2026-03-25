@@ -294,6 +294,7 @@ CREATE TABLE versions (
   store_path    TEXT,           -- path in store/ directory
   checksum      TEXT,           -- SHA-256 of directory contents
   manifest_json TEXT,           -- full frontmatter metadata as JSON
+  published_by  TEXT,           -- nullable; reserved for audit logging when auth is enabled
   published_at  TIMESTAMP,
   UNIQUE(resource_id, version)
 );
@@ -403,6 +404,96 @@ trait SearchBackend {
 - File I/O must go through the `BlobStore` trait, not direct `fs::read`/`fs::write` in handlers
 - Search must go through the `SearchBackend` trait
 - These traits are defined in MVP and have SQLite/filesystem implementations — swapping is adding a new impl, not refactoring existing code
+
+### Future: Registry Federation
+
+MVP uses a single `--server` URL. Enterprise needs to pull from multiple registries with priority ordering.
+
+**Project manifest extension:**
+```toml
+agent_type = "claude"
+
+[registries]
+urls = [
+  "https://registry.company.com",
+  "http://localhost:7420",
+]
+# Resolves top-down: first match wins
+```
+
+**Resolution behavior:**
+- CLI tries each URL in order until it finds the requested resource+version
+- First match wins — company registry overrides public
+- `relava publish` always targets the first URL (or `--server` override)
+- If `[registries]` is absent, falls back to `--server` flag (default `localhost:7420`)
+
+**Design constraints for MVP code:**
+- The CLI's HTTP client should accept a list of base URLs, not just one — in MVP the list has one entry
+- Resource resolution should be a loop over registries, not a single call — trivial to extend
+
+### Future: Audit Logging
+
+Enterprise compliance requires tracking who published what and when.
+
+**Schema extension (not created in MVP):**
+```sql
+-- Add to versions table when auth is enabled:
+-- ALTER TABLE versions ADD COLUMN published_by TEXT;  -- user ID or token identifier
+
+-- CREATE TABLE audit_log (
+--   id          INTEGER PRIMARY KEY,
+--   timestamp   TIMESTAMP NOT NULL,
+--   actor       TEXT NOT NULL,       -- user ID or token
+--   action      TEXT NOT NULL,       -- 'publish', 'delete', 'update'
+--   resource_type TEXT,
+--   resource_name TEXT,
+--   version     TEXT,
+--   details_json TEXT                -- additional context
+-- );
+```
+
+**Design constraints for MVP code:**
+- The `published_by` field should be accepted (nullable) in the publish endpoint now — ignored in MVP, populated when auth is enabled
+
+### Future: Webhooks & Events
+
+Enterprise needs to notify external systems when resources change (e.g., trigger CI/CD on publish).
+
+**Event types:**
+- `resource.published` — new version published
+- `resource.deleted` — resource removed from registry
+
+**Delivery model:**
+- Server maintains a webhook subscription list (URL + secret + event filter)
+- On matching event, POST JSON payload to subscriber URL with HMAC signature
+- Retry with exponential backoff on failure
+
+**Design constraints for MVP code:**
+- Server handlers should emit events after successful operations (even if no subscribers exist in MVP) — makes adding webhook delivery a thin layer later
+
+### Future: API Versioning Strategy
+
+Current API is `/api/v1`. Strategy for evolution:
+
+- **v1 is supported indefinitely** — no breaking changes, only additive
+- **v2 alongside v1** — when breaking changes are needed, add `/api/v2` while keeping `/api/v1` operational
+- **Deprecation**: 6-month sunset period with `Deprecation` header on v1 responses before removal
+- **CLI compatibility**: CLI includes its expected API version in requests (`Accept: application/vnd.relava.v1+json`), server routes accordingly
+
+### Future: Offline & Air-gapped Environments
+
+Some enterprise environments can't reach external networks. Need portable resource bundles.
+
+**Commands:**
+- `relava export <type> <name> [--version <ver>] --output bundle.tar.gz` — bundle resource + transitive dependencies into a portable archive
+- `relava import-bundle bundle.tar.gz` — load resources from archive into local registry
+
+**Bundle format:**
+- Tar.gz containing resource directories + a manifest listing all included resources and versions
+- Self-contained: includes all transitive dependencies so the target registry can serve them
+
+**Design constraints for MVP code:**
+- Resource store layout (`~/.relava/store/<type>/<name>/<version>/`) is already archive-friendly — export is essentially `tar` of store paths
 
 ### REST API
 
