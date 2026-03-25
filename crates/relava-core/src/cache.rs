@@ -123,7 +123,9 @@ impl DownloadCache {
 /// Prevents path traversal attacks from malicious registry responses.
 fn validate_relative_path(path: &str) -> Result<(), CacheError> {
     let p = Path::new(path);
-    if p.is_absolute() {
+    // Path::is_absolute() is platform-specific — on Windows it doesn't reject
+    // Unix-style absolute paths like "/etc/passwd". Check for leading `/` explicitly.
+    if p.is_absolute() || path.starts_with('/') {
         return Err(CacheError::Decode(format!("unsafe file path: {path}")));
     }
     if p.components().any(|c| c == Component::ParentDir) {
@@ -145,7 +147,10 @@ fn collect_relative_paths(dir: &Path, base: &Path) -> Result<Vec<String>, CacheE
             let relative = path
                 .strip_prefix(base)
                 .map_err(|e| CacheError::Decode(e.to_string()))?;
-            result.push(relative.to_string_lossy().to_string());
+            // Normalize to forward slashes for cross-platform consistency.
+            // On Windows, strip_prefix produces paths with `\` separators.
+            let s = relative.to_string_lossy().replace('\\', "/");
+            result.push(s);
         }
     }
     result.sort();
