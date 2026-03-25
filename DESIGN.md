@@ -98,25 +98,43 @@ This design choice is deliberate:
 
 ## 3. Resource Format Specification
 
-### Resource Manifest: `relava.toml` (per resource)
+### Dependency Declaration: `metadata.relava` in frontmatter
 
-Every publishable resource has a `relava.toml` at its root:
+Dependencies are declared in the `metadata.relava` block of a resource's `.md` frontmatter. This follows the [Agent Skills specification](https://agentskills.io/specification), which defines `metadata` as an open-ended extension point for custom fields. Claude Code and other agent products ignore unknown metadata keys.
 
-```toml
-# Skill dependencies: name = version constraint
-[skills]
-notify-slack = "0.3.0"
-strawpot-recap = "1.0.0"
-
-# Agent dependencies: name = version constraint
-[agents]
-debugger = "0.5.0"
-
-# Future sections (not yet implemented):
-# [rules]
-# [commands]
-# [hooks]
+**Skill example** (`SKILL.md`):
+```yaml
+---
+name: code-review
+description: Comprehensive code review with security and style checks
+metadata:
+  relava:
+    skills:
+      - security-baseline: "1.0.0"
+      - style-guide: "0.3.0"
+---
 ```
+
+**Agent example** (`.claude/agents/orchestrator.md`):
+```yaml
+---
+name: orchestrator
+description: Coordinates feature development workflow
+tools: Agent, Glob, Grep, Read
+model: sonnet
+metadata:
+  relava:
+    skills:
+      - notify-slack: "0.3.0"
+      - code-review: "1.0.0"
+    agents:
+      - debugger: "0.5.0"
+---
+```
+
+On `relava install`, the CLI parses the `metadata.relava` block from the resource's `.md` file to discover and recursively install transitive dependencies.
+
+There is no separate `relava.toml` per resource — all dependency information lives in the frontmatter. The project-level `relava.toml` (see below) declares what's installed at the project level.
 
 ### Resource Naming (Slug Format)
 
@@ -795,20 +813,7 @@ This mirrors `npm install --save` behavior. The `relava.toml` file is the declar
 
 ## 8. Dependency Resolution
 
-Resources can declare dependencies on other resources via the `[skills]` and `[agents]` sections in their `relava.toml` manifest. Relava resolves these transitively before installation, using a strategy that varies by resource type.
-
-### Dependency Declaration
-
-```toml
-# In a resource's relava.toml
-[skills]
-notify-slack = "0.3.0"
-
-[agents]
-debugger = "0.5.0"
-```
-
-Dependencies are typed — a skill can depend on other skills, agents can depend on skills and other agents. Each entry is a resource name with a version constraint.
+Resources declare dependencies via `metadata.relava` in their `.md` frontmatter (see Section 3). Relava resolves these transitively before installation, using a strategy that varies by resource type.
 
 ### Resolution Strategies
 
@@ -816,7 +821,7 @@ Dependencies are typed — a skill can depend on other skills, agents can depend
 
 Skills use a **depth-first search** resolved entirely by the CLI:
 
-1. Read the target skill's `relava.toml` from the local store
+1. Read the target skill's `SKILL.md` frontmatter from the local store
 2. For each dependency, recursively fetch its manifest and resolve its dependencies
 3. Build a flat, deduplicated install list (leaves first)
 4. Detect circular dependencies and abort with an error
@@ -830,7 +835,7 @@ install skill A
   → resolved order: D, E, B, C, A  (leaves first, deduplicated)
 ```
 
-The CLI performs this entirely locally — it reads manifests from `~/.relava/store/` without requiring the server.
+The CLI performs this via the server — it fetches frontmatter from the registry for each dependency.
 
 #### Agents: Server-Side Topological Sort
 
@@ -971,7 +976,7 @@ When publishing a new or modified resource to the registry and the name already 
 
 | Week | Deliverable |
 |------|-------------|
-| 1 | Project scaffolding (Rust CLI with clap). `relava.toml` parser (both resource manifest and project manifest). Resource validation. |
+| 1 | Project scaffolding (Rust CLI with clap). `relava.toml` project manifest parser. Frontmatter parser for `metadata.relava` dependencies. Resource validation. |
 | 2 | Local store (`~/.relava/store/`). SQLite database setup with schema. `relava init`, `relava install <type> <name>` (from local store), `relava remove <type> <name>`. `--save` flag support. |
 | 3 | `relava list <type>`, `relava info <type> <name>`, `relava update <type> <name>`, `relava doctor`. `relava install relava.toml` (bulk install from manifest). `relava import` for converting existing resource directories. |
 
@@ -1086,7 +1091,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 #### Week 1 — Scaffolding & Parsing
 
 - ✅ 1. Project scaffolding — Rust workspace, Cargo.toml, clap CLI skeleton with global options (`--server`, `--project`, `--verbose`, `--json`)
-- ✅ 2. `relava.toml` parser — resource manifest format (`[skills]`, `[agents]` sections with name=version constraint entries)
+- ✅ 2. Frontmatter parser — parse `metadata.relava` block from `.md` files to extract skill/agent dependency declarations
 - ⬜ 3. `relava.toml` parser — project manifest format (skills, agents, commands, rules sections with name=version constraint entries: `"X.Y.Z"`, `"==X.Y.Z"`, `"*"`)
 - ⬜ 3a. Version constraint resolver — parse and resolve `"*"` to latest, `"==X.Y.Z"` and `"X.Y.Z"` to exact versions from local store
 - ⬜ 4. Resource validation — validate directory structure per resource type (skill needs `SKILL.md`, agent needs `<name>.md`, etc.)
@@ -1102,7 +1107,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
 - ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `skills/<name>/`, handle multi-file directories
 - ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
-- ⬜ 12a. Dependency declaration parser — parse `[skills]`, `[agents]` sections from resource manifest — *depends on 2*
+- ⬜ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
 - ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
 - ⬜ 12c. Dependency-aware install — install transitive dependencies in resolved order before the target resource, skip already-installed versions — *depends on 9, 12b*
 - ⬜ 13. Installation record tracking — write installed file paths and dependency relationships to `installations.installed_files_json` in database
