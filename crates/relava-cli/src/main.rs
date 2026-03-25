@@ -20,7 +20,10 @@ fn main() {
                 .project
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
-                    std::env::current_dir().expect("cannot determine current directory")
+                    std::env::current_dir().unwrap_or_else(|e| {
+                        eprintln!("cannot determine current directory: {e}");
+                        std::process::exit(1);
+                    })
                 });
             if let Err(msg) = init::run(&project_dir) {
                 eprintln!("{msg}");

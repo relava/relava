@@ -474,6 +474,33 @@ latest = "*"
     }
 
     #[test]
+    fn project_all_sections() {
+        let toml = r#"
+agent_type = "claude"
+
+[skills]
+denden = "1.2.0"
+
+[agents]
+debugger = "0.5.0"
+
+[commands]
+delegate = "1.0.0"
+commit = "0.2.0"
+
+[rules]
+no-console-log = "1.0.0"
+"#;
+        let manifest = ProjectManifest::from_str(toml).unwrap();
+        assert_eq!(manifest.agent_type.as_deref(), Some("claude"));
+        assert_eq!(manifest.skills["denden"], "1.2.0");
+        assert_eq!(manifest.agents["debugger"], "0.5.0");
+        assert_eq!(manifest.commands["delegate"], "1.0.0");
+        assert_eq!(manifest.commands["commit"], "0.2.0");
+        assert_eq!(manifest.rules["no-console-log"], "1.0.0");
+    }
+
+    #[test]
     fn project_roundtrip() {
         let toml = r#"
 [skills]
@@ -481,6 +508,12 @@ notify-slack = "0.3.0"
 
 [agents]
 debugger = "0.5.0"
+
+[commands]
+delegate = "1.0.0"
+
+[rules]
+no-console-log = "1.0.0"
 "#;
         let manifest = ProjectManifest::from_str(toml).unwrap();
         let output = manifest.to_string_pretty().unwrap();
