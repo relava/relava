@@ -104,6 +104,8 @@ impl ResourceDeps {
 ///
 /// Example:
 /// ```toml
+/// agent_type = "claude"
+///
 /// [skills]
 /// denden = "1.2.0"
 /// notify-slack = "*"
@@ -114,6 +116,11 @@ impl ResourceDeps {
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectManifest {
+    /// Target agent platform — determines install paths.
+    /// Supported: "claude". Future: "codex", "gemini".
+    #[serde(default)]
+    pub agent_type: Option<String>,
+
     #[serde(default)]
     pub skills: BTreeMap<String, String>,
 
@@ -275,8 +282,22 @@ metadata:
     #[test]
     fn project_empty() {
         let manifest = ProjectManifest::from_str("").unwrap();
+        assert!(manifest.agent_type.is_none());
         assert!(manifest.skills.is_empty());
         assert!(manifest.agents.is_empty());
+    }
+
+    #[test]
+    fn project_with_agent_type() {
+        let toml = r#"
+agent_type = "claude"
+
+[skills]
+denden = "1.2.0"
+"#;
+        let manifest = ProjectManifest::from_str(toml).unwrap();
+        assert_eq!(manifest.agent_type.as_deref(), Some("claude"));
+        assert_eq!(manifest.skills["denden"], "1.2.0");
     }
 
     #[test]

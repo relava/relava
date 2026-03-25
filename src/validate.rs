@@ -2,6 +2,57 @@ use std::path::Path;
 
 use crate::version::Version;
 
+/// Target agent platform — determines install paths and conventions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentType {
+    Claude,
+}
+
+impl AgentType {
+    pub fn from_str(s: &str) -> Result<Self, ValidationError> {
+        match s {
+            "claude" => Ok(Self::Claude),
+            _ => Err(ValidationError::UnsupportedAgentType(s.to_string())),
+        }
+    }
+
+    /// Install path prefix for skills.
+    pub fn skills_dir(&self) -> &str {
+        match self {
+            Self::Claude => ".claude/skills",
+        }
+    }
+
+    /// Install path prefix for agents.
+    pub fn agents_dir(&self) -> &str {
+        match self {
+            Self::Claude => ".claude/agents",
+        }
+    }
+
+    /// Install path prefix for commands.
+    pub fn commands_dir(&self) -> &str {
+        match self {
+            Self::Claude => ".claude/commands",
+        }
+    }
+
+    /// Install path prefix for rules.
+    pub fn rules_dir(&self) -> &str {
+        match self {
+            Self::Claude => ".claude/rules",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Claude => write!(f, "claude"),
+        }
+    }
+}
+
 /// Resource types managed by Relava.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResourceType {
@@ -149,6 +200,7 @@ pub fn validate_version(version: &str) -> Result<Version, ValidationError> {
 
 #[derive(Debug, PartialEq)]
 pub enum ValidationError {
+    UnsupportedAgentType(String),
     InvalidResourceType(String),
     InvalidSlug(String, String),
     InvalidStructure(String),
@@ -158,6 +210,9 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnsupportedAgentType(t) => {
+                write!(f, "unsupported agent_type '{t}': only 'claude' is supported")
+            }
             Self::InvalidResourceType(t) => {
                 write!(f, "invalid resource type '{t}': must be skill, agent, command, or rule")
             }
@@ -178,6 +233,29 @@ impl std::error::Error for ValidationError {}
 mod tests {
     use super::*;
     use std::fs;
+
+    // -- Agent type tests --
+
+    #[test]
+    fn agent_type_valid() {
+        assert_eq!(AgentType::from_str("claude").unwrap(), AgentType::Claude);
+    }
+
+    #[test]
+    fn agent_type_unsupported() {
+        assert!(AgentType::from_str("codex").is_err());
+        assert!(AgentType::from_str("gemini").is_err());
+        assert!(AgentType::from_str("").is_err());
+    }
+
+    #[test]
+    fn agent_type_install_paths() {
+        let claude = AgentType::Claude;
+        assert_eq!(claude.skills_dir(), ".claude/skills");
+        assert_eq!(claude.agents_dir(), ".claude/agents");
+        assert_eq!(claude.commands_dir(), ".claude/commands");
+        assert_eq!(claude.rules_dir(), ".claude/rules");
+    }
 
     // -- Resource type tests --
 
