@@ -1,4 +1,5 @@
 mod cli;
+mod manifest;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
@@ -65,9 +66,6 @@ fn main() {
         }
         Command::Import { resource_type, path } => {
             println!("relava import {resource_type} {path}");
-        }
-        Command::InstallTools { resource_type, name } => {
-            println!("relava install-tools {resource_type} {name}");
         }
     }
 }
