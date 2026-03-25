@@ -14,7 +14,7 @@ async fn main() {
     eprintln!("relava-server listening on {addr}");
     let listener = TcpListener::bind(&addr)
         .await
-        .expect("failed to bind listener");
+        .unwrap_or_else(|e| panic!("failed to bind to {addr}: {e}"));
     axum::serve(listener, app)
         .await
         .expect("server exited with error");
