@@ -81,7 +81,7 @@ Relava solves this by providing:
 3. **GUI** is a web application served by the server for browsing and searching the registry.
 4. **Project Filesystem** is managed entirely by the CLI — the server never touches it.
 
-### Crate Organization
+### Crate Structure
 
 The codebase is a Cargo workspace with four crates, split by concern and license:
 
@@ -92,9 +92,8 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
     +--- relava-cli     (Apache-2.0)   CLI binary, registry client, caching,
     |                                  dependency resolution, env checks, tool checks
     |
-    +--- relava-server  (ELv2)         Registry server, REST API, storage layer
-             ^                         (ResourceStore, BlobStore, SearchBackend traits),
-             |                         SQLite DB, blob store, web GUI
+    +--- relava-server  (ELv2)         Registry server, REST API, storage layer,
+             ^                         SQLite DB, blob store, web GUI
              |
          relava-server-ext (ELv2)      Cloud and enterprise extensions (future)
 ```
