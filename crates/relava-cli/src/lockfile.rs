@@ -122,6 +122,17 @@ impl Lockfile {
     pub fn add_direct_install(&mut self, resource_type: ResourceType, name: &str, version: &str) {
         let rt = resource_type.to_string();
 
+        // If upgrading from a different version, remove the old package entry
+        // to avoid stale entries that would confuse `locked_version()`.
+        if let Some(old) = self
+            .direct_installs
+            .iter()
+            .find(|d| d.resource_type == rt && d.name == name && d.version != version)
+        {
+            let old_key = package_key(&rt, name, &old.version);
+            self.remove_package_and_orphans(&old_key);
+        }
+
         // Replace or add in directInstalls
         self.direct_installs
             .retain(|d| !(d.resource_type == rt && d.name == name));
@@ -162,7 +173,7 @@ impl Lockfile {
             dependents: Vec::new(),
         });
 
-        if !entry.dependents.contains(&dependent_key.to_string()) {
+        if !entry.dependents.iter().any(|d| d == dependent_key) {
             entry.dependents.push(dependent_key.to_string());
         }
     }
@@ -202,8 +213,7 @@ impl Lockfile {
     fn remove_package_and_orphans(&mut self, key: &str) -> Vec<String> {
         let mut removed = Vec::new();
 
-        // Remove this package
-        let Some(_entry) = self.packages.remove(key) else {
+        if self.packages.remove(key).is_none() {
             return removed;
         };
         removed.push(key.to_string());
@@ -263,7 +273,8 @@ impl Lockfile {
             entry.version = new_version.to_string();
             self.packages.insert(new_key.clone(), entry);
         } else {
-            // If the old key didn't exist, just ensure the new one does
+            // Old version not in lockfile — lockfile may be out of sync.
+            eprintln!("[warn] lockfile: {old_key} not found during update — creating {new_key}");
             self.packages
                 .entry(new_key.clone())
                 .or_insert_with(|| PackageEntry {
@@ -334,11 +345,7 @@ pub fn update_after_remove(
 }
 
 /// Update the lockfile after `relava update`.
-pub fn update_after_update(
-    project_dir: &Path,
-    result: &UpdateResult,
-    _json: bool,
-) -> Result<(), String> {
+pub fn update_after_update(project_dir: &Path, result: &UpdateResult) -> Result<(), String> {
     if result.updated.is_empty() {
         return Ok(());
     }
@@ -512,8 +519,16 @@ mod tests {
         assert_eq!(lf.direct_installs.len(), 1);
         assert_eq!(lf.direct_installs[0].version, "1.2.0");
 
-        // Both versions exist in packages (old one not auto-removed)
+        // Old version should be removed from packages
+        assert!(!lf.packages.contains_key("skill:denden:1.0.0"));
         assert!(lf.packages.contains_key("skill:denden:1.2.0"));
+        assert_eq!(lf.packages.len(), 1);
+
+        // locked_version should return the new version
+        assert_eq!(
+            lf.locked_version(ResourceType::Skill, "denden"),
+            Some("1.2.0".to_string())
+        );
     }
 
     #[test]
@@ -840,7 +855,7 @@ mod tests {
             up_to_date: Vec::new(),
             skipped: Vec::new(),
         };
-        update_after_update(root.path(), &result, false).unwrap();
+        update_after_update(root.path(), &result).unwrap();
 
         let lf = Lockfile::load(root.path()).unwrap().unwrap();
         assert_eq!(lf.direct_installs[0].version, "2.0.0");
@@ -852,7 +867,7 @@ mod tests {
         let root = temp_dir();
         let result = UpdateResult::default();
         // Should not create a lockfile when nothing was updated
-        update_after_update(root.path(), &result, false).unwrap();
+        update_after_update(root.path(), &result).unwrap();
         assert!(Lockfile::load(root.path()).unwrap().is_none());
     }
 

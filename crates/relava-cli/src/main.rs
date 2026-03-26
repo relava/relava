@@ -118,9 +118,7 @@ fn main() {
                 match bulk_install::run(&opts) {
                     Ok(result) => {
                         // Update lockfile for all successfully installed resources
-                        if let Err(e) = lockfile::update_after_bulk_install(&project_dir, &result)
-                            && !cli.json
-                        {
+                        if let Err(e) = lockfile::update_after_bulk_install(&project_dir, &result) {
                             eprintln!("[warn] failed to update relava.lock: {e}");
                         }
                         if cli.json {
@@ -174,8 +172,7 @@ fn main() {
                             &name,
                             &result.version,
                             &result.dependencies,
-                        ) && !cli.json
-                        {
+                        ) {
                             eprintln!("[warn] failed to update relava.lock: {e}");
                         }
                         if cli.json {
@@ -217,7 +214,6 @@ fn main() {
                     // Update lockfile — remove entry and orphaned deps
                     if result.was_removed
                         && let Err(e) = lockfile::update_after_remove(&project_dir, rt, &name)
-                        && !cli.json
                     {
                         eprintln!("[warn] failed to update relava.lock: {e}");
                     }
@@ -304,9 +300,7 @@ fn main() {
             match update::run(&opts) {
                 Ok(result) => {
                     // Update lockfile for each updated resource
-                    if let Err(e) = lockfile::update_after_update(&project_dir, &result, cli.json)
-                        && !cli.json
-                    {
+                    if let Err(e) = lockfile::update_after_update(&project_dir, &result) {
                         eprintln!("[warn] failed to update relava.lock: {e}");
                     }
                     if cli.json {

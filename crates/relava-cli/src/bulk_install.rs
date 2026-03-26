@@ -55,8 +55,17 @@ pub fn run(opts: &BulkInstallOpts) -> Result<BulkInstallResult, String> {
     let client = RegistryClient::new(opts.server_url);
     let cache = new_cache()?;
 
-    // Load lockfile if present — used for exact version pinning
-    let lockfile: Option<Lockfile> = Lockfile::load(opts.project_dir).unwrap_or(None);
+    // Load lockfile if present — used for exact version pinning.
+    // A corrupt lockfile is an error, not silently ignored.
+    let lockfile: Option<Lockfile> = match Lockfile::load(opts.project_dir) {
+        Ok(lf) => lf,
+        Err(e) => {
+            if !opts.json {
+                eprintln!("[warn] {e} — resolving fresh versions from registry");
+            }
+            None
+        }
+    };
     if !opts.json && lockfile.is_some() {
         eprintln!("  Using versions from relava.lock");
     }
