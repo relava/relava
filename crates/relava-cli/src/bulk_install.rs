@@ -5,6 +5,7 @@ use relava_types::validate::ResourceType;
 
 use crate::cache::DownloadCache;
 use crate::install;
+use crate::lockfile::Lockfile;
 use crate::registry::RegistryClient;
 
 /// Options for bulk-installing all resources from a manifest.
@@ -44,11 +45,21 @@ pub struct BulkInstallResult {
 /// constraints, and installs each one. Resources already installed at the
 /// correct version are skipped. Failures are collected and reported but do
 /// not prevent other resources from being installed.
+///
+/// When `relava.lock` exists, exact versions are read from the lockfile
+/// (like `npm ci`). When absent, versions are resolved fresh from the
+/// registry and a lockfile is created by the caller.
 pub fn run(opts: &BulkInstallOpts) -> Result<BulkInstallResult, String> {
     let manifest = load_manifest(opts.project_dir)?;
 
     let client = RegistryClient::new(opts.server_url);
     let cache = new_cache()?;
+
+    // Load lockfile if present — used for exact version pinning
+    let lockfile: Option<Lockfile> = Lockfile::load(opts.project_dir).unwrap_or(None);
+    if !opts.json && lockfile.is_some() {
+        eprintln!("  Using versions from relava.lock");
+    }
 
     let sections: &[(ResourceType, &std::collections::BTreeMap<String, String>)] = &[
         (ResourceType::Skill, &manifest.skills),
@@ -86,8 +97,15 @@ pub fn run(opts: &BulkInstallOpts) -> Result<BulkInstallResult, String> {
     for (index, &(resource_type, name, version_pin)) in entries.iter().enumerate() {
         let position = index + 1;
 
+        // If lockfile exists, use the exact locked version instead of
+        // resolving from the registry (like `npm ci`).
+        let locked_version: Option<String> = lockfile
+            .as_ref()
+            .and_then(|lf| lf.locked_version(resource_type, name));
+        let effective_pin = locked_version.as_deref().unwrap_or(version_pin);
+
         // Resolve version from registry
-        let version = match client.resolve_version(resource_type, name, Some(version_pin)) {
+        let version = match client.resolve_version(resource_type, name, Some(effective_pin)) {
             Ok(v) => v,
             Err(e) => {
                 let msg = e.to_string();
