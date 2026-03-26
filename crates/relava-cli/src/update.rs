@@ -30,7 +30,7 @@ pub struct UpdateEntry {
 }
 
 /// Result of the update command.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct UpdateResult {
     pub updated: Vec<UpdateEntry>,
     pub up_to_date: Vec<UpdateEntry>,
@@ -79,13 +79,9 @@ fn run_single(
         ));
     }
 
-    let entry = update_resource(opts, client, cache, manifest, resource_type, name)?;
+    let entry = update_resource(opts, client, cache, manifest.as_ref(), resource_type, name)?;
 
-    let mut result = UpdateResult {
-        updated: Vec::new(),
-        up_to_date: Vec::new(),
-        skipped: Vec::new(),
-    };
+    let mut result = UpdateResult::default();
     classify_entry(&mut result, entry);
 
     Ok(result)
@@ -104,11 +100,7 @@ fn run_all(
         );
     };
 
-    let mut result = UpdateResult {
-        updated: Vec::new(),
-        up_to_date: Vec::new(),
-        skipped: Vec::new(),
-    };
+    let mut result = UpdateResult::default();
 
     let sections: &[(ResourceType, &std::collections::BTreeMap<String, String>)] = &[
         (ResourceType::Skill, &manifest.skills),
@@ -129,14 +121,7 @@ fn run_all(
                 continue;
             }
 
-            match update_resource(
-                opts,
-                client,
-                cache,
-                &Some(manifest.clone()),
-                resource_type,
-                name,
-            ) {
+            match update_resource(opts, client, cache, Some(manifest), resource_type, name) {
                 Ok(entry) => classify_entry(&mut result, entry),
                 Err(e) => {
                     if !opts.json {
@@ -166,15 +151,13 @@ fn update_resource(
     opts: &UpdateOpts,
     client: &RegistryClient,
     cache: &DownloadCache,
-    manifest: &Option<ProjectManifest>,
+    manifest: Option<&ProjectManifest>,
     resource_type: ResourceType,
     name: &str,
 ) -> Result<UpdateEntry, String> {
-    let old_version = manifest_version(manifest, resource_type, name);
-
-    // Check for a pinned (exact) version constraint
-    let version_pin = manifest_version_pin(manifest, resource_type, name);
-    if let Some(ref pin) = version_pin {
+    let version_pin = manifest_version(manifest, resource_type, name);
+    let old_version = version_pin.clone().unwrap_or_default();
+    if let Some(pin) = &version_pin {
         let constraint =
             VersionConstraint::parse(pin).map_err(|e| format!("invalid version pin: {e}"))?;
         if let VersionConstraint::Exact(ref pinned) = constraint {
@@ -311,31 +294,15 @@ fn print_summary(result: &UpdateResult) {
     println!("{} resource(s): {}", total, parts.join(", "));
 }
 
-/// Get the version string for a resource from relava.toml.
+/// Look up the version string for a resource in relava.toml.
+///
+/// Returns `None` if there is no manifest or the resource is not listed.
 fn manifest_version(
-    manifest: &Option<ProjectManifest>,
-    resource_type: ResourceType,
-    name: &str,
-) -> String {
-    let Some(m) = manifest else {
-        return String::new();
-    };
-    let section = match resource_type {
-        ResourceType::Skill => &m.skills,
-        ResourceType::Agent => &m.agents,
-        ResourceType::Command => &m.commands,
-        ResourceType::Rule => &m.rules,
-    };
-    section.get(name).cloned().unwrap_or_default()
-}
-
-/// Get the raw version pin string from relava.toml (for constraint checking).
-fn manifest_version_pin(
-    manifest: &Option<ProjectManifest>,
+    manifest: Option<&ProjectManifest>,
     resource_type: ResourceType,
     name: &str,
 ) -> Option<String> {
-    let m = manifest.as_ref()?;
+    let m = manifest?;
     let section = match resource_type {
         ResourceType::Skill => &m.skills,
         ResourceType::Agent => &m.agents,
@@ -382,11 +349,7 @@ mod tests {
 
     #[test]
     fn classify_entry_updated() {
-        let mut result = UpdateResult {
-            updated: Vec::new(),
-            up_to_date: Vec::new(),
-            skipped: Vec::new(),
-        };
+        let mut result = UpdateResult::default();
         let entry = UpdateEntry {
             resource_type: "skill".to_string(),
             name: "denden".to_string(),
@@ -402,11 +365,7 @@ mod tests {
 
     #[test]
     fn classify_entry_up_to_date() {
-        let mut result = UpdateResult {
-            updated: Vec::new(),
-            up_to_date: Vec::new(),
-            skipped: Vec::new(),
-        };
+        let mut result = UpdateResult::default();
         let entry = UpdateEntry {
             resource_type: "skill".to_string(),
             name: "denden".to_string(),
@@ -421,11 +380,7 @@ mod tests {
 
     #[test]
     fn classify_entry_pinned() {
-        let mut result = UpdateResult {
-            updated: Vec::new(),
-            up_to_date: Vec::new(),
-            skipped: Vec::new(),
-        };
+        let mut result = UpdateResult::default();
         let entry = UpdateEntry {
             resource_type: "skill".to_string(),
             name: "denden".to_string(),
@@ -451,13 +406,13 @@ mod tests {
             rules: Default::default(),
         };
         assert_eq!(
-            manifest_version(&Some(manifest), ResourceType::Skill, "denden"),
-            "1.2.0"
+            manifest_version(Some(&manifest), ResourceType::Skill, "denden"),
+            Some("1.2.0".to_string())
         );
     }
 
     #[test]
-    fn manifest_version_missing_returns_empty() {
+    fn manifest_version_missing_returns_none() {
         let manifest = ProjectManifest {
             agent_type: None,
             skills: Default::default(),
@@ -466,37 +421,18 @@ mod tests {
             rules: Default::default(),
         };
         assert_eq!(
-            manifest_version(&Some(manifest), ResourceType::Skill, "denden"),
-            ""
+            manifest_version(Some(&manifest), ResourceType::Skill, "denden"),
+            None
         );
     }
 
     #[test]
-    fn manifest_version_no_manifest_returns_empty() {
-        assert_eq!(manifest_version(&None, ResourceType::Skill, "denden"), "");
-    }
-
-    // --- manifest_version_pin ---
-
-    #[test]
-    fn manifest_version_pin_exact() {
-        let manifest = ProjectManifest {
-            agent_type: None,
-            skills: [("denden".to_string(), "1.2.0".to_string())]
-                .into_iter()
-                .collect(),
-            agents: Default::default(),
-            commands: Default::default(),
-            rules: Default::default(),
-        };
-        assert_eq!(
-            manifest_version_pin(&Some(manifest), ResourceType::Skill, "denden"),
-            Some("1.2.0".to_string())
-        );
+    fn manifest_version_no_manifest_returns_none() {
+        assert_eq!(manifest_version(None, ResourceType::Skill, "denden"), None);
     }
 
     #[test]
-    fn manifest_version_pin_wildcard() {
+    fn manifest_version_wildcard() {
         let manifest = ProjectManifest {
             agent_type: None,
             skills: [("denden".to_string(), "*".to_string())]
@@ -507,16 +443,8 @@ mod tests {
             rules: Default::default(),
         };
         assert_eq!(
-            manifest_version_pin(&Some(manifest), ResourceType::Skill, "denden"),
+            manifest_version(Some(&manifest), ResourceType::Skill, "denden"),
             Some("*".to_string())
-        );
-    }
-
-    #[test]
-    fn manifest_version_pin_none() {
-        assert_eq!(
-            manifest_version_pin(&None, ResourceType::Skill, "denden"),
-            None
         );
     }
 
