@@ -17,6 +17,7 @@ mod resolver;
 mod save;
 mod tools;
 mod update;
+mod validate;
 
 #[cfg(test)]
 mod lifecycle_tests;
@@ -462,6 +463,32 @@ fn main() {
                 Ok(result) => {
                     if cli.json {
                         print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
+        }
+        Command::Validate {
+            resource_type,
+            path,
+        } => {
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let opts = validate::ValidateOpts {
+                resource_type: rt,
+                path: std::path::Path::new(&path),
+                json: cli.json,
+                _verbose: cli.verbose,
+            };
+
+            match validate::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                    if !result.is_valid() {
+                        std::process::exit(1);
                     }
                 }
                 Err(e) => exit_with_error(&e, cli.json),
