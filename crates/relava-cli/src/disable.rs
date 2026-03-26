@@ -25,9 +25,9 @@ pub struct DisableResult {
 
 /// Run `relava disable <type> <name>`.
 ///
-/// Renames the installed resource file or directory by appending a `.disabled`
-/// suffix. Disabled resources are not discovered by Claude Code since their
-/// names no longer match expected patterns.
+/// Moves the installed resource file or directory into a `.disabled/`
+/// subdirectory within the type directory. Disabled resources are not
+/// discovered by Claude Code since they no longer reside at expected paths.
 pub fn run(opts: &DisableOpts) -> Result<DisableResult, String> {
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
 
@@ -64,9 +64,18 @@ pub fn run(opts: &DisableOpts) -> Result<DisableResult, String> {
         ));
     }
 
+    // Ensure the .disabled/ directory exists
+    let disabled_dir = disabled_dir_for(opts.project_dir, opts.resource_type);
+    std::fs::create_dir_all(&disabled_dir).map_err(|e| {
+        format!(
+            "failed to create .disabled directory at {}: {e}",
+            disabled_dir.display()
+        )
+    })?;
+
     if opts.verbose {
         eprintln!(
-            "renaming {} -> {}",
+            "moving {} -> {}",
             active_path.display(),
             disabled_path.display()
         );
@@ -93,25 +102,33 @@ pub fn run(opts: &DisableOpts) -> Result<DisableResult, String> {
     })
 }
 
-/// Compute the `.disabled` path for a resource.
+/// Return the `.disabled/` subdirectory path for a resource type.
+pub(crate) fn disabled_dir_for(
+    project_dir: &Path,
+    resource_type: ResourceType,
+) -> std::path::PathBuf {
+    install::type_dir(project_dir, resource_type).join(".disabled")
+}
+
+/// Compute the path inside the `.disabled/` subdirectory for a resource.
 ///
-/// Skills: `<type_dir>/<name>.disabled/`
-/// Others: `<type_dir>/<name>.md.disabled`
+/// Skills: `<type_dir>/.disabled/<name>/`
+/// Others: `<type_dir>/.disabled/<name>.md`
 pub fn disabled_path_for(
     project_dir: &Path,
     resource_type: ResourceType,
     name: &str,
 ) -> std::path::PathBuf {
-    let dir = install::type_dir(project_dir, resource_type);
+    let disabled_dir = disabled_dir_for(project_dir, resource_type);
     match resource_type {
-        ResourceType::Skill => dir.join(format!("{name}.disabled")),
+        ResourceType::Skill => disabled_dir.join(name),
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
-            dir.join(format!("{name}.md.disabled"))
+            disabled_dir.join(format!("{name}.md"))
         }
     }
 }
 
-/// Check if a resource is disabled (has the `.disabled` suffix on disk).
+/// Check if a resource is disabled (exists inside the `.disabled/` subdirectory).
 #[cfg(test)]
 pub fn is_disabled(project_dir: &Path, resource_type: ResourceType, name: &str) -> bool {
     disabled_path_for(project_dir, resource_type, name).exists()
@@ -152,10 +169,10 @@ mod tests {
         let result = run(&opts).unwrap();
         assert!(result.was_disabled);
         assert!(!skill_dir.exists());
-        assert!(root.path().join(".claude/skills/denden.disabled").exists());
+        assert!(root.path().join(".claude/skills/.disabled/denden").exists());
         assert!(
             root.path()
-                .join(".claude/skills/denden.disabled/SKILL.md")
+                .join(".claude/skills/.disabled/denden/SKILL.md")
                 .exists()
         );
     }
@@ -177,7 +194,7 @@ mod tests {
         let result = run(&opts).unwrap();
         assert!(result.was_disabled);
         assert!(!agents_dir.join("debugger.md").exists());
-        assert!(agents_dir.join("debugger.md.disabled").exists());
+        assert!(agents_dir.join(".disabled/debugger.md").exists());
     }
 
     #[test]
@@ -197,7 +214,7 @@ mod tests {
         let result = run(&opts).unwrap();
         assert!(result.was_disabled);
         assert!(!cmds_dir.join("deploy.md").exists());
-        assert!(cmds_dir.join("deploy.md.disabled").exists());
+        assert!(cmds_dir.join(".disabled/deploy.md").exists());
     }
 
     #[test]
@@ -217,15 +234,13 @@ mod tests {
         let result = run(&opts).unwrap();
         assert!(result.was_disabled);
         assert!(!rules_dir.join("no-console-log.md").exists());
-        assert!(rules_dir.join("no-console-log.md.disabled").exists());
+        assert!(rules_dir.join(".disabled/no-console-log.md").exists());
     }
 
     #[test]
     fn disable_already_disabled_is_noop() {
         let root = temp_dir();
-        let skills_dir = root.path().join(".claude/skills");
-        fs::create_dir_all(&skills_dir).unwrap();
-        let disabled_dir = skills_dir.join("denden.disabled");
+        let disabled_dir = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled_dir).unwrap();
         fs::write(disabled_dir.join("SKILL.md"), "# Denden").unwrap();
 
@@ -282,7 +297,7 @@ mod tests {
         fs::create_dir_all(&active).unwrap();
         fs::write(active.join("SKILL.md"), "# Active").unwrap();
 
-        let disabled = root.path().join(".claude/skills/denden.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
@@ -315,7 +330,7 @@ mod tests {
         };
         run(&opts).unwrap();
 
-        let disabled = root.path().join(".claude/skills/myskill.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/myskill");
         assert!(disabled.join("SKILL.md").exists());
         assert!(disabled.join("templates/tmpl.md").exists());
     }
@@ -323,7 +338,7 @@ mod tests {
     #[test]
     fn is_disabled_returns_true_for_disabled_skill() {
         let root = temp_dir();
-        let disabled = root.path().join(".claude/skills/denden.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Denden").unwrap();
 
@@ -343,9 +358,9 @@ mod tests {
     #[test]
     fn is_disabled_returns_true_for_disabled_agent() {
         let root = temp_dir();
-        let agents_dir = root.path().join(".claude/agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-        fs::write(agents_dir.join("debugger.md.disabled"), "# Debugger").unwrap();
+        let disabled_dir = root.path().join(".claude/agents/.disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("debugger.md"), "# Debugger").unwrap();
 
         assert!(is_disabled(root.path(), ResourceType::Agent, "debugger"));
     }
@@ -355,7 +370,7 @@ mod tests {
         let result = DisableResult {
             resource_type: "skill".to_string(),
             name: "denden".to_string(),
-            disabled_path: ".claude/skills/denden.disabled".to_string(),
+            disabled_path: ".claude/skills/.disabled/denden".to_string(),
             was_disabled: true,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();

@@ -90,24 +90,17 @@ fn scan_type(
         }
     };
 
+    // Scan active resources
     match resource_type {
         ResourceType::Skill => {
-            // Skills are subdirectories containing SKILL.md
             for entry in read_dir.flatten() {
                 if !entry.path().is_dir() {
                     continue;
                 }
                 let dir_name = entry.file_name().to_string_lossy().to_string();
 
-                // Check for disabled skill directories (name.disabled/)
-                if let Some(name) = dir_name.strip_suffix(".disabled") {
-                    let version = manifest_version(manifest, resource_type, name);
-                    entries.push(ListEntry {
-                        name: name.to_string(),
-                        resource_type: resource_type.to_string(),
-                        version,
-                        status: "disabled".to_string(),
-                    });
+                // Skip the .disabled/ subdirectory itself
+                if dir_name == ".disabled" {
                     continue;
                 }
 
@@ -124,26 +117,12 @@ fn scan_type(
             }
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
-            // Single .md files (active: name.md, disabled: name.md.disabled)
             for entry in read_dir.flatten() {
                 let path = entry.path();
                 if !path.is_file() {
                     continue;
                 }
                 let file_name = entry.file_name().to_string_lossy().to_string();
-
-                // Check for disabled files (name.md.disabled)
-                if let Some(stem) = file_name.strip_suffix(".md.disabled") {
-                    let version = manifest_version(manifest, resource_type, stem);
-                    entries.push(ListEntry {
-                        name: stem.to_string(),
-                        resource_type: resource_type.to_string(),
-                        version,
-                        status: "disabled".to_string(),
-                    });
-                    continue;
-                }
-
                 let name = match file_name.strip_suffix(".md") {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -159,8 +138,52 @@ fn scan_type(
         }
     }
 
+    // Scan disabled resources from .disabled/ subdirectory
+    let disabled_dir = type_dir.join(".disabled");
+    if disabled_dir.is_dir()
+        && let Ok(disabled_entries) = std::fs::read_dir(&disabled_dir)
+    {
+        scan_disabled_entries(disabled_entries, resource_type, manifest, &mut entries);
+    }
+
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
+}
+
+/// Scan a `.disabled/` subdirectory for disabled resources.
+fn scan_disabled_entries(
+    read_dir: std::fs::ReadDir,
+    resource_type: ResourceType,
+    manifest: &Option<ProjectManifest>,
+    entries: &mut Vec<ListEntry>,
+) {
+    for entry in read_dir.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let name = match resource_type {
+            ResourceType::Skill => {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                file_name
+            }
+            ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
+                if !entry.path().is_file() {
+                    continue;
+                }
+                match file_name.strip_suffix(".md") {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                }
+            }
+        };
+        let version = manifest_version(manifest, resource_type, &name);
+        entries.push(ListEntry {
+            name,
+            resource_type: resource_type.to_string(),
+            version,
+            status: "disabled".to_string(),
+        });
+    }
 }
 
 /// Look up the version for a resource in relava.toml, if it exists.
@@ -475,8 +498,8 @@ mod tests {
         fs::create_dir_all(&active).unwrap();
         fs::write(active.join("SKILL.md"), "# Active").unwrap();
 
-        // Disabled skill
-        let disabled = root.path().join(".claude/skills/disabled-skill.disabled");
+        // Disabled skill (in .disabled/ subdirectory)
+        let disabled = root.path().join(".claude/skills/.disabled/disabled-skill");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
@@ -512,8 +535,10 @@ mod tests {
 
         // Active
         fs::write(agents_dir.join("active-agent.md"), "# Active").unwrap();
-        // Disabled
-        fs::write(agents_dir.join("disabled-agent.md.disabled"), "# Disabled").unwrap();
+        // Disabled (in .disabled/ subdirectory)
+        let disabled_dir = agents_dir.join(".disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("disabled-agent.md"), "# Disabled").unwrap();
 
         let opts = ListOpts {
             resource_type: Some(ResourceType::Agent),
@@ -543,8 +568,8 @@ mod tests {
     fn list_disabled_with_manifest_version() {
         let root = temp_dir();
 
-        // Disabled skill
-        let disabled = root.path().join(".claude/skills/denden.disabled");
+        // Disabled skill (in .disabled/ subdirectory)
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Denden").unwrap();
 
@@ -575,8 +600,12 @@ mod tests {
         fs::create_dir_all(&agents_dir).unwrap();
 
         fs::write(agents_dir.join("zebra.md"), "# Zebra").unwrap();
-        fs::write(agents_dir.join("alpha.md.disabled"), "# Alpha disabled").unwrap();
         fs::write(agents_dir.join("middle.md"), "# Middle").unwrap();
+
+        // Disabled agent in .disabled/ subdirectory
+        let disabled_dir = agents_dir.join(".disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("alpha.md"), "# Alpha disabled").unwrap();
 
         let opts = ListOpts {
             resource_type: Some(ResourceType::Agent),

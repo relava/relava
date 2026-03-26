@@ -26,8 +26,8 @@ pub struct EnableResult {
 
 /// Run `relava enable <type> <name>`.
 ///
-/// Removes the `.disabled` suffix from the resource file or directory,
-/// restoring it so Claude Code can discover it again.
+/// Moves the resource from the `.disabled/` subdirectory back to the type
+/// directory, restoring it so Claude Code can discover it again.
 pub fn run(opts: &EnableOpts) -> Result<EnableResult, String> {
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
 
@@ -66,7 +66,7 @@ pub fn run(opts: &EnableOpts) -> Result<EnableResult, String> {
 
     if opts.verbose {
         eprintln!(
-            "renaming {} -> {}",
+            "moving {} -> {}",
             disabled_path.display(),
             active_path.display()
         );
@@ -78,6 +78,12 @@ pub fn run(opts: &EnableOpts) -> Result<EnableResult, String> {
             opts.resource_type, opts.name
         )
     })?;
+
+    // Clean up empty .disabled/ directory
+    let disabled_dir = disable::disabled_dir_for(opts.project_dir, opts.resource_type);
+    if disabled_dir.is_dir() {
+        let _ = std::fs::remove_dir(&disabled_dir); // only succeeds if empty
+    }
 
     let display = relative_display(&active_path, opts.project_dir);
 
@@ -106,7 +112,7 @@ mod tests {
     #[test]
     fn enable_disabled_skill() {
         let root = temp_dir();
-        let disabled = root.path().join(".claude/skills/denden.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Denden").unwrap();
 
@@ -126,9 +132,9 @@ mod tests {
     #[test]
     fn enable_disabled_agent() {
         let root = temp_dir();
-        let agents_dir = root.path().join(".claude/agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-        fs::write(agents_dir.join("debugger.md.disabled"), "# Debugger").unwrap();
+        let disabled_dir = root.path().join(".claude/agents/.disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("debugger.md"), "# Debugger").unwrap();
 
         let opts = EnableOpts {
             resource_type: ResourceType::Agent,
@@ -139,16 +145,16 @@ mod tests {
         };
         let result = run(&opts).unwrap();
         assert!(result.was_enabled);
-        assert!(!agents_dir.join("debugger.md.disabled").exists());
-        assert!(agents_dir.join("debugger.md").exists());
+        assert!(!disabled_dir.join("debugger.md").exists());
+        assert!(root.path().join(".claude/agents/debugger.md").exists());
     }
 
     #[test]
     fn enable_disabled_command() {
         let root = temp_dir();
-        let cmds_dir = root.path().join(".claude/commands");
-        fs::create_dir_all(&cmds_dir).unwrap();
-        fs::write(cmds_dir.join("deploy.md.disabled"), "# Deploy").unwrap();
+        let disabled_dir = root.path().join(".claude/commands/.disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("deploy.md"), "# Deploy").unwrap();
 
         let opts = EnableOpts {
             resource_type: ResourceType::Command,
@@ -159,15 +165,15 @@ mod tests {
         };
         let result = run(&opts).unwrap();
         assert!(result.was_enabled);
-        assert!(cmds_dir.join("deploy.md").exists());
+        assert!(root.path().join(".claude/commands/deploy.md").exists());
     }
 
     #[test]
     fn enable_disabled_rule() {
         let root = temp_dir();
-        let rules_dir = root.path().join(".claude/rules");
-        fs::create_dir_all(&rules_dir).unwrap();
-        fs::write(rules_dir.join("no-console-log.md.disabled"), "# Rule").unwrap();
+        let disabled_dir = root.path().join(".claude/rules/.disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("no-console-log.md"), "# Rule").unwrap();
 
         let opts = EnableOpts {
             resource_type: ResourceType::Rule,
@@ -178,7 +184,7 @@ mod tests {
         };
         let result = run(&opts).unwrap();
         assert!(result.was_enabled);
-        assert!(rules_dir.join("no-console-log.md").exists());
+        assert!(root.path().join(".claude/rules/no-console-log.md").exists());
     }
 
     #[test]
@@ -209,7 +215,7 @@ mod tests {
         fs::create_dir_all(&active).unwrap();
         fs::write(active.join("SKILL.md"), "# Active").unwrap();
 
-        let disabled = root.path().join(".claude/skills/denden.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
         fs::create_dir_all(&disabled).unwrap();
         fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
@@ -259,7 +265,7 @@ mod tests {
     #[test]
     fn enable_preserves_skill_contents() {
         let root = temp_dir();
-        let disabled = root.path().join(".claude/skills/myskill.disabled");
+        let disabled = root.path().join(".claude/skills/.disabled/myskill");
         fs::create_dir_all(disabled.join("templates")).unwrap();
         fs::write(disabled.join("SKILL.md"), "# MySkill").unwrap();
         fs::write(disabled.join("templates/tmpl.md"), "template").unwrap();
@@ -322,5 +328,54 @@ mod tests {
         let er = run(&enable_opts).unwrap();
         assert!(er.was_enabled);
         assert!(skill_dir.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn enable_cleans_up_empty_disabled_dir() {
+        let root = temp_dir();
+        let disabled_dir = root.path().join(".claude/skills/.disabled");
+        let disabled = disabled_dir.join("only-skill");
+        fs::create_dir_all(&disabled).unwrap();
+        fs::write(disabled.join("SKILL.md"), "# Only").unwrap();
+
+        let opts = EnableOpts {
+            resource_type: ResourceType::Skill,
+            name: "only-skill",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+        run(&opts).unwrap();
+
+        // .disabled/ dir should be cleaned up since it's now empty
+        assert!(!disabled_dir.exists());
+    }
+
+    #[test]
+    fn enable_keeps_disabled_dir_when_not_empty() {
+        let root = temp_dir();
+        let disabled_dir = root.path().join(".claude/skills/.disabled");
+
+        // Two disabled skills
+        let disabled1 = disabled_dir.join("skill-a");
+        fs::create_dir_all(&disabled1).unwrap();
+        fs::write(disabled1.join("SKILL.md"), "# A").unwrap();
+
+        let disabled2 = disabled_dir.join("skill-b");
+        fs::create_dir_all(&disabled2).unwrap();
+        fs::write(disabled2.join("SKILL.md"), "# B").unwrap();
+
+        let opts = EnableOpts {
+            resource_type: ResourceType::Skill,
+            name: "skill-a",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+        run(&opts).unwrap();
+
+        // .disabled/ dir should still exist (skill-b is still there)
+        assert!(disabled_dir.exists());
+        assert!(disabled2.exists());
     }
 }
