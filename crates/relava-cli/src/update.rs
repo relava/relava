@@ -47,7 +47,7 @@ pub struct UpdateResult {
 pub fn run(opts: &UpdateOpts) -> Result<UpdateResult, String> {
     let client = RegistryClient::new(opts.server_url);
     let cache = new_cache()?;
-    let manifest = load_manifest(opts.project_dir);
+    let manifest = load_manifest(opts.project_dir)?;
 
     if opts.all {
         run_all(opts, &client, &cache, &manifest)
@@ -118,6 +118,13 @@ fn run_all(
                         resource_type, name
                     );
                 }
+                result.skipped.push(UpdateEntry {
+                    resource_type: resource_type.to_string(),
+                    name: name.clone(),
+                    old_version: String::new(),
+                    new_version: String::new(),
+                    status: "not_installed".to_string(),
+                });
                 continue;
             }
 
@@ -190,7 +197,18 @@ fn update_resource(
     let old_parsed = if old_version.is_empty() {
         None
     } else {
-        Version::parse(&old_version).ok()
+        match Version::parse(&old_version) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                if !opts.json {
+                    eprintln!(
+                        "[warn] {}/{}: cannot parse installed version '{}' — will re-download",
+                        resource_type, name, old_version
+                    );
+                }
+                None
+            }
+        }
     };
 
     if old_parsed.as_ref() == Some(&latest) {
@@ -312,18 +330,19 @@ fn manifest_version(
     section.get(name).cloned()
 }
 
-/// Load the project manifest, returning None if it doesn't exist.
-fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
+/// Load the project manifest.
+///
+/// Returns `Ok(None)` if the file does not exist, `Err` if the file
+/// exists but cannot be parsed. This distinction prevents malformed
+/// manifests from silently bypassing version pins.
+fn load_manifest(project_dir: &Path) -> Result<Option<ProjectManifest>, String> {
     let path = project_dir.join("relava.toml");
-    match ProjectManifest::from_file(&path) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            if path.exists() {
-                eprintln!("[warn] failed to read relava.toml: {e}");
-            }
-            None
-        }
+    if !path.exists() {
+        return Ok(None);
     }
+    ProjectManifest::from_file(&path)
+        .map(Some)
+        .map_err(|e| format!("failed to read relava.toml: {e}"))
 }
 
 /// Create a download cache at ~/.relava/cache/.
@@ -453,7 +472,7 @@ mod tests {
     #[test]
     fn load_manifest_missing_file() {
         let root = temp_dir();
-        assert!(load_manifest(root.path()).is_none());
+        assert!(load_manifest(root.path()).unwrap().is_none());
     }
 
     #[test]
@@ -464,15 +483,17 @@ mod tests {
             "[skills]\ndenden = \"1.0.0\"\n",
         )
         .unwrap();
-        let m = load_manifest(root.path()).unwrap();
+        let m = load_manifest(root.path()).unwrap().unwrap();
         assert_eq!(m.skills["denden"], "1.0.0");
     }
 
     #[test]
-    fn load_manifest_invalid_warns() {
+    fn load_manifest_invalid_returns_error() {
         let root = temp_dir();
         fs::write(root.path().join("relava.toml"), "not valid toml {{{{").unwrap();
-        assert!(load_manifest(root.path()).is_none());
+        let result = load_manifest(root.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to read"));
     }
 
     // --- run_single validation ---
