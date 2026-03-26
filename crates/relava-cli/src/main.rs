@@ -163,9 +163,8 @@ fn main() {
             let cache = cache::DownloadCache::new(cache_dir);
             let version_pins = install::load_version_pins(&project_dir, rt);
 
-            let provider = resolver::RegistryDepProvider::new(
-                &client, &cache, &project_dir, version_pins,
-            );
+            let provider =
+                resolver::RegistryDepProvider::new(&client, &cache, &project_dir, version_pins);
 
             match resolver::resolve(&provider, rt, &name) {
                 Ok(result) => {

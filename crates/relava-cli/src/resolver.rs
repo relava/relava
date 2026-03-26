@@ -157,7 +157,11 @@ impl DepTreeNode {
 fn format_children(children: &[DepTreeNode], prefix: &str, output: &mut String) {
     for (i, child) in children.iter().enumerate() {
         let is_last = i == children.len() - 1;
-        let connector = if is_last { "\u{2514}\u{2500}\u{2500} " } else { "\u{251c}\u{2500}\u{2500} " };
+        let connector = if is_last {
+            "\u{2514}\u{2500}\u{2500} "
+        } else {
+            "\u{251c}\u{2500}\u{2500} "
+        };
         let child_prefix = if is_last {
             format!("{prefix}    ")
         } else {
@@ -258,7 +262,11 @@ fn dfs<P: DepProvider>(
         .skills
         .iter()
         .map(|n| (ResourceType::Skill, n.as_str()))
-        .chain(meta.agents.iter().map(|n| (ResourceType::Agent, n.as_str())));
+        .chain(
+            meta.agents
+                .iter()
+                .map(|n| (ResourceType::Agent, n.as_str())),
+        );
 
     let mut children = Vec::new();
     for (dep_type, dep_name) in dep_entries {
@@ -357,9 +365,9 @@ impl<'a> RegistryDepProvider<'a> {
         let dir = self.cache.version_dir(resource_type, name, version);
         match resource_type {
             ResourceType::Skill => dir.join("SKILL.md"),
-            ResourceType::Agent
-            | ResourceType::Command
-            | ResourceType::Rule => dir.join(format!("{name}.md")),
+            ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
+                dir.join(format!("{name}.md"))
+            }
         }
     }
 }
@@ -387,8 +395,7 @@ impl<'a> DepProvider for RegistryDepProvider<'a> {
         if !md_path.exists() {
             return Ok(ResourceMeta::default());
         }
-        ResourceMeta::from_file(&md_path)
-            .map_err(|e| ResolveError::MetadataFetch(e.to_string()))
+        ResourceMeta::from_file(&md_path).map_err(|e| ResolveError::MetadataFetch(e.to_string()))
     }
 
     fn is_installed(&self, resource_type: ResourceType, name: &str, _version: &Version) -> bool {
@@ -497,7 +504,11 @@ mod tests {
     // -- Helpers --
 
     fn names(result: &ResolveResult) -> Vec<&str> {
-        result.install_order.iter().map(|d| d.name.as_str()).collect()
+        result
+            .install_order
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect()
     }
 
     fn types_and_names(result: &ResolveResult) -> Vec<(&str, &str)> {
@@ -605,14 +616,7 @@ mod tests {
             &[],
             false,
         );
-        provider.add(
-            ResourceType::Skill,
-            "log-capture",
-            "0.2.0",
-            &[],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "log-capture", "0.2.0", &[], &[], false);
 
         let result = resolve(&provider, ResourceType::Agent, "orchestrator").unwrap();
         assert_eq!(
@@ -631,14 +635,7 @@ mod tests {
     #[test]
     fn resolve_marks_already_installed() {
         let mut provider = MockDepProvider::new();
-        provider.add(
-            ResourceType::Skill,
-            "a",
-            "1.0.0",
-            &["b", "c"],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "a", "1.0.0", &["b", "c"], &[], false);
         provider.add(ResourceType::Skill, "b", "1.0.0", &[], &[], true); // installed
         provider.add(ResourceType::Skill, "c", "1.0.0", &[], &[], false);
 
@@ -652,14 +649,7 @@ mod tests {
     #[test]
     fn deps_to_install_filters_installed() {
         let mut provider = MockDepProvider::new();
-        provider.add(
-            ResourceType::Skill,
-            "a",
-            "1.0.0",
-            &["b", "c"],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "a", "1.0.0", &["b", "c"], &[], false);
         provider.add(ResourceType::Skill, "b", "1.0.0", &[], &[], true);
         provider.add(ResourceType::Skill, "c", "1.0.0", &[], &[], false);
 
@@ -705,10 +695,7 @@ mod tests {
         let err = resolve(&provider, ResourceType::Skill, "a").unwrap_err();
         match err {
             ResolveError::CircularDependency(cycle) => {
-                assert_eq!(
-                    cycle,
-                    vec!["skill/a", "skill/b", "skill/c", "skill/a"]
-                );
+                assert_eq!(cycle, vec!["skill/a", "skill/b", "skill/c", "skill/a"]);
             }
             other => panic!("expected CircularDependency, got: {other}"),
         }
@@ -837,7 +824,10 @@ mod tests {
         let err = resolve(&provider, ResourceType::Skill, "a").unwrap_err();
         match err {
             ResolveError::VersionResolution(msg) => {
-                assert!(msg.contains("nonexistent"), "error should name the missing dep: {msg}");
+                assert!(
+                    msg.contains("nonexistent"),
+                    "error should name the missing dep: {msg}"
+                );
             }
             other => panic!("expected VersionResolution, got: {other}"),
         }
@@ -855,14 +845,7 @@ mod tests {
     #[test]
     fn resolve_preserves_versions() {
         let mut provider = MockDepProvider::new();
-        provider.add(
-            ResourceType::Skill,
-            "a",
-            "2.1.0",
-            &["b"],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "a", "2.1.0", &["b"], &[], false);
         provider.add(ResourceType::Skill, "b", "0.3.1", &[], &[], false);
 
         let result = resolve(&provider, ResourceType::Skill, "a").unwrap();
@@ -946,14 +929,7 @@ mod tests {
             &[],
             false,
         );
-        provider.add(
-            ResourceType::Skill,
-            "log-capture",
-            "0.2.0",
-            &[],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "log-capture", "0.2.0", &[], &[], false);
 
         let result = resolve(&provider, ResourceType::Agent, "orchestrator").unwrap();
         let display = result.tree.display();
@@ -994,14 +970,7 @@ mod tests {
     #[test]
     fn json_output_serializes() {
         let mut provider = MockDepProvider::new();
-        provider.add(
-            ResourceType::Skill,
-            "a",
-            "1.0.0",
-            &["b"],
-            &[],
-            false,
-        );
+        provider.add(ResourceType::Skill, "a", "1.0.0", &["b"], &[], false);
         provider.add(ResourceType::Skill, "b", "1.0.0", &[], &[], true);
 
         let result = resolve(&provider, ResourceType::Skill, "a").unwrap();
@@ -1095,8 +1064,7 @@ mod tests {
 
         let client = RegistryClient::new("http://localhost:7420");
         let cache = DownloadCache::new(dir.path().join("cache"));
-        let provider =
-            RegistryDepProvider::new(&client, &cache, install_root, BTreeMap::new());
+        let provider = RegistryDepProvider::new(&client, &cache, install_root, BTreeMap::new());
 
         let v = Version::parse("1.0.0").unwrap();
         assert!(provider.is_installed(ResourceType::Skill, "denden", &v));
@@ -1114,8 +1082,7 @@ mod tests {
 
         let client = RegistryClient::new("http://localhost:7420");
         let cache = DownloadCache::new(dir.path().join("cache"));
-        let provider =
-            RegistryDepProvider::new(&client, &cache, install_root, BTreeMap::new());
+        let provider = RegistryDepProvider::new(&client, &cache, install_root, BTreeMap::new());
 
         let v = Version::parse("1.0.0").unwrap();
         assert!(provider.is_installed(ResourceType::Agent, "debugger", &v));
@@ -1158,8 +1125,7 @@ metadata:
             .unwrap();
 
         let client = RegistryClient::new("http://localhost:7420");
-        let provider =
-            RegistryDepProvider::new(&client, &cache, dir.path(), BTreeMap::new());
+        let provider = RegistryDepProvider::new(&client, &cache, dir.path(), BTreeMap::new());
 
         let meta = provider
             .fetch_deps(ResourceType::Skill, "code-review", &v)
@@ -1179,8 +1145,7 @@ metadata:
         std::fs::create_dir_all(&version_dir).unwrap();
 
         let client = RegistryClient::new("http://localhost:7420");
-        let provider =
-            RegistryDepProvider::new(&client, &cache, dir.path(), BTreeMap::new());
+        let provider = RegistryDepProvider::new(&client, &cache, dir.path(), BTreeMap::new());
 
         let v = Version::parse("1.0.0").unwrap();
         let meta = provider

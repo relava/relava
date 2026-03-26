@@ -95,9 +95,7 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         .map_err(|e| e.to_string())?;
 
     // Resolve transitive dependencies
-    let dep_results = resolve_and_install_deps(
-        opts, &client, &cache, &install_root,
-    )?;
+    let dep_results = resolve_and_install_deps(opts, &client, &cache, &install_root)?;
 
     if !opts.json {
         println!(
@@ -108,7 +106,13 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
 
     // Check cache first, download if needed
     let file_paths = download_to_cache(
-        &client, &cache, opts.resource_type, opts.name, &version, opts.server_url, opts.verbose,
+        &client,
+        &cache,
+        opts.resource_type,
+        opts.name,
+        &version,
+        opts.server_url,
+        opts.verbose,
     )?;
 
     // Write files to the correct Claude Code location
@@ -216,8 +220,7 @@ fn resolve_and_install_deps(
     let provider = RegistryDepProvider::new(client, cache, install_root, version_pins);
 
     let resolve_result =
-        resolver::resolve(&provider, opts.resource_type, opts.name)
-            .map_err(|e| e.to_string())?;
+        resolver::resolve(&provider, opts.resource_type, opts.name).map_err(|e| e.to_string())?;
 
     let deps_to_install = resolve_result.deps_to_install();
     if deps_to_install.is_empty() {
@@ -226,7 +229,11 @@ fn resolve_and_install_deps(
 
     if !opts.json {
         let count = deps_to_install.len();
-        let plural = if count == 1 { "dependency" } else { "dependencies" };
+        let plural = if count == 1 {
+            "dependency"
+        } else {
+            "dependencies"
+        };
         println!("Resolving {count} {plural}...");
     }
 
@@ -240,7 +247,10 @@ fn resolve_and_install_deps(
 
         if dep.already_installed {
             if !opts.json {
-                println!("  [skip]    {} {}@{} (already installed)", dep.resource_type, dep.name, dep.version);
+                println!(
+                    "  [skip]    {} {}@{} (already installed)",
+                    dep.resource_type, dep.name, dep.version
+                );
             }
             results.push(DepInstallResult {
                 resource_type: dep.resource_type.clone(),
@@ -251,17 +261,27 @@ fn resolve_and_install_deps(
             continue;
         }
 
-        let dep_rt = ResourceType::from_str(&dep.resource_type)
-            .map_err(|e| e.to_string())?;
+        let dep_rt = ResourceType::from_str(&dep.resource_type).map_err(|e| e.to_string())?;
         let dep_version = Version::parse(&dep.version)
             .map_err(|e| format!("invalid version for dependency {}: {e}", dep.name))?;
 
         if !opts.json {
-            println!("  [dep]     Installing {} {}@{}...", dep.resource_type, dep.name, dep.version);
+            println!(
+                "  [dep]     Installing {} {}@{}...",
+                dep.resource_type, dep.name, dep.version
+            );
         }
 
         // Download to cache if needed
-        download_to_cache(client, cache, dep_rt, &dep.name, &dep_version, opts.server_url, opts.verbose)?;
+        download_to_cache(
+            client,
+            cache,
+            dep_rt,
+            &dep.name,
+            &dep_version,
+            opts.server_url,
+            opts.verbose,
+        )?;
 
         // Write to project
         write_to_project(install_root, dep_rt, &dep.name, &dep_version, cache)
@@ -306,7 +326,10 @@ fn resolve_and_install_deps(
 }
 
 /// Load version pins from relava.toml for the given resource type.
-pub fn load_version_pins(project_dir: &Path, resource_type: ResourceType) -> BTreeMap<String, String> {
+pub fn load_version_pins(
+    project_dir: &Path,
+    resource_type: ResourceType,
+) -> BTreeMap<String, String> {
     let toml_path = project_dir.join("relava.toml");
     if !toml_path.exists() {
         return BTreeMap::new();
