@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use relava_types::validate::ResourceType;
 use relava_types::version::{Version, VersionConstraint, VersionError};
@@ -75,6 +75,25 @@ pub struct DownloadResponse {
     pub files: Vec<DownloadFile>,
 }
 
+/// Request body for PUT /resources/:type/:name/versions/:version
+#[derive(Debug, Serialize)]
+pub struct PublishRequest {
+    pub resource_type: String,
+    pub name: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub files: Vec<PublishFile>,
+}
+
+/// A file entry in the publish request.
+#[derive(Debug, Serialize)]
+pub struct PublishFile {
+    /// Relative path within the resource
+    pub path: String,
+    /// Base64-encoded file content
+    pub content: String,
+}
+
 /// HTTP client for the Relava registry server.
 pub struct RegistryClient {
     base_url: String,
@@ -90,15 +109,21 @@ impl RegistryClient {
         }
     }
 
+    /// Map a reqwest send error to the appropriate `RegistryError`.
+    fn map_send_error(&self, e: reqwest::Error) -> RegistryError {
+        if e.is_connect() {
+            RegistryError::ServerUnreachable(self.base_url.clone())
+        } else {
+            RegistryError::Http(e.to_string())
+        }
+    }
+
     /// Send a GET request, mapping connection errors to `ServerUnreachable`.
     fn send_get(&self, url: &str) -> Result<reqwest::blocking::Response, RegistryError> {
-        self.client.get(url).send().map_err(|e| {
-            if e.is_connect() {
-                RegistryError::ServerUnreachable(self.base_url.clone())
-            } else {
-                RegistryError::Http(e.to_string())
-            }
-        })
+        self.client
+            .get(url)
+            .send()
+            .map_err(|e| self.map_send_error(e))
     }
 
     /// Check that the server is reachable.
@@ -174,6 +199,60 @@ impl RegistryClient {
             },
             other => RegistryError::VersionResolution(other),
         })
+    }
+
+    /// Publish a resource to the registry.
+    ///
+    /// `files` is a list of (relative_path, base64_content) pairs.
+    pub fn publish(
+        &self,
+        resource_type: ResourceType,
+        name: &str,
+        version: &Version,
+        files: &[(String, String)],
+        description: Option<&str>,
+    ) -> Result<(), RegistryError> {
+        let url = format!(
+            "{}/api/v1/resources/{}/{}/versions/{}",
+            self.base_url, resource_type, name, version
+        );
+
+        let body = PublishRequest {
+            resource_type: resource_type.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            description: description.map(|s| s.to_string()),
+            files: files
+                .iter()
+                .map(|(path, content)| PublishFile {
+                    path: path.clone(),
+                    content: content.clone(),
+                })
+                .collect(),
+        };
+
+        let response = self
+            .client
+            .put(&url)
+            .json(&body)
+            .send()
+            .map_err(|e| self.map_send_error(e))?;
+
+        if response.status().as_u16() == 409 {
+            return Err(RegistryError::Http(format!(
+                "version {} of '{}' already exists",
+                version, name
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(RegistryError::Http(format!(
+                "server returned status {}",
+                response.status()
+            )));
+        }
+
+        Ok(())
     }
 
     /// Download resource files for a specific version.

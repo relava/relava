@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod doctor;
 mod env_check;
+mod import;
 mod info;
 mod init;
 mod install;
@@ -289,7 +290,7 @@ fn main() {
         Command::Resolve {
             resource_type,
             name,
-            version: _, // TODO: use version pin when version-constrained resolution is implemented
+            version,
         } => {
             let rt = match install::parse_resource_type(&resource_type) {
                 Ok(rt) => rt,
@@ -307,7 +308,13 @@ fn main() {
                 .join(".relava")
                 .join("cache");
             let cache = cache::DownloadCache::new(cache_dir);
-            let version_pins = install::load_version_pins(&project_dir, rt);
+
+            // Merge --version flag into the version pins so the resolver
+            // uses it when resolving the root resource.
+            let mut version_pins = install::load_version_pins(&project_dir, rt);
+            if let Some(ref v) = version {
+                version_pins.insert(name.clone(), v.clone());
+            }
 
             let provider =
                 resolver::RegistryDepProvider::new(&client, &cache, &project_dir, version_pins);
@@ -355,8 +362,28 @@ fn main() {
         Command::Import {
             resource_type,
             path,
+            version,
         } => {
-            println!("relava import {resource_type} {path}");
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let opts = import::ImportOpts {
+                server_url: &cli.server,
+                resource_type: rt,
+                path: std::path::Path::new(&path),
+                version: version.as_deref(),
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match import::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
     }
 }
