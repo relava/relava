@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use relava_types::validate::{self, AgentType, ResourceType};
+use relava_types::validate::{self, ResourceType};
 
 use crate::install;
 
@@ -49,7 +49,7 @@ pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
         });
     }
 
-    let target_path = resource_path(opts.project_dir, opts.resource_type, opts.name);
+    let target_path = install::resource_path(opts.project_dir, opts.resource_type, opts.name);
 
     if opts.verbose {
         eprintln!("removing {}", target_path.display());
@@ -84,23 +84,6 @@ pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
         removed_path: removed_display,
         was_removed: true,
     })
-}
-
-/// Compute the filesystem path for an installed resource.
-fn resource_path(project_dir: &Path, resource_type: ResourceType, name: &str) -> PathBuf {
-    let agent_type = AgentType::Claude;
-    match resource_type {
-        ResourceType::Skill => project_dir.join(agent_type.skills_dir()).join(name),
-        ResourceType::Agent => project_dir
-            .join(agent_type.agents_dir())
-            .join(format!("{name}.md")),
-        ResourceType::Command => project_dir
-            .join(agent_type.commands_dir())
-            .join(format!("{name}.md")),
-        ResourceType::Rule => project_dir
-            .join(agent_type.rules_dir())
-            .join(format!("{name}.md")),
-    }
 }
 
 /// Walk up from a removed path and remove empty directories, stopping

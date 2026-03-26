@@ -345,28 +345,37 @@ pub fn load_version_pins(
     }
 }
 
-/// Check if a resource is already installed in the project.
-#[allow(dead_code)] // will be used by `relava remove` for dependency checking
-pub fn is_installed(install_root: &Path, resource_type: ResourceType, name: &str) -> bool {
+/// Compute the directory that holds resources of a given type.
+pub fn type_dir(project_dir: &Path, resource_type: ResourceType) -> PathBuf {
     let agent_type = AgentType::Claude;
+    project_dir.join(match resource_type {
+        ResourceType::Skill => agent_type.skills_dir(),
+        ResourceType::Agent => agent_type.agents_dir(),
+        ResourceType::Command => agent_type.commands_dir(),
+        ResourceType::Rule => agent_type.rules_dir(),
+    })
+}
+
+/// Compute the filesystem path for an installed resource.
+///
+/// Skills resolve to a directory (`<type_dir>/<name>/`), while agents,
+/// commands, and rules resolve to a single file (`<type_dir>/<name>.md`).
+pub fn resource_path(project_dir: &Path, resource_type: ResourceType, name: &str) -> PathBuf {
+    let dir = type_dir(project_dir, resource_type);
     match resource_type {
-        ResourceType::Skill => install_root
-            .join(agent_type.skills_dir())
-            .join(name)
-            .join("SKILL.md")
-            .exists(),
-        ResourceType::Agent => install_root
-            .join(agent_type.agents_dir())
-            .join(format!("{name}.md"))
-            .exists(),
-        ResourceType::Command => install_root
-            .join(agent_type.commands_dir())
-            .join(format!("{name}.md"))
-            .exists(),
-        ResourceType::Rule => install_root
-            .join(agent_type.rules_dir())
-            .join(format!("{name}.md"))
-            .exists(),
+        ResourceType::Skill => dir.join(name),
+        ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
+            dir.join(format!("{name}.md"))
+        }
+    }
+}
+
+/// Check if a resource is already installed in the project.
+pub fn is_installed(install_root: &Path, resource_type: ResourceType, name: &str) -> bool {
+    let path = resource_path(install_root, resource_type, name);
+    match resource_type {
+        ResourceType::Skill => path.join("SKILL.md").exists(),
+        ResourceType::Agent | ResourceType::Command | ResourceType::Rule => path.exists(),
     }
 }
 
