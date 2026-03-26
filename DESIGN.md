@@ -96,6 +96,7 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
              ^                         SQLite DB, blob store, web GUI
              |
          relava-server-ext (ELv2)      Cloud and enterprise extensions (future)
+                                       (depends on both relava-server and relava-types)
 ```
 
 | Crate | Contains | License |
@@ -492,7 +493,7 @@ trait SearchBackend {
 - Database access must go through the `ResourceStore` trait, not raw SQL in handlers
 - File I/O must go through the `BlobStore` trait, not direct `fs::read`/`fs::write` in handlers
 - Search must go through the `SearchBackend` trait
-- These traits live in the `relava-server` crate and have SQLite/filesystem implementations — swapping is adding a new impl (e.g., in `relava-server-ext`), not refactoring existing code
+- These traits live in the `relava-server` crate and have SQLite/filesystem implementations — swapping is adding a new impl, not refactoring existing code
 
 ### Future: Registry Federation
 
