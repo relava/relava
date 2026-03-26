@@ -4,7 +4,9 @@ mod env_check;
 mod init;
 mod install;
 mod registry;
+mod remove;
 mod resolver;
+mod save;
 mod tools;
 
 use clap::Parser;
@@ -64,7 +66,7 @@ fn main() {
             resource_type,
             name,
             version,
-            save: _save,
+            save,
             global,
             yes,
         } => {
@@ -92,6 +94,17 @@ fn main() {
 
             match install::run(&opts) {
                 Ok(result) => {
+                    if save
+                        && let Err(e) = save::add_to_manifest(
+                            &project_dir,
+                            rt,
+                            &name,
+                            &result.version,
+                            cli.json,
+                        )
+                    {
+                        exit_with_error(&e, cli.json);
+                    }
                     if cli.json {
                         print_json(&result);
                     }
@@ -102,9 +115,35 @@ fn main() {
         Command::Remove {
             resource_type,
             name,
-            ..
+            save,
         } => {
-            println!("relava remove {resource_type} {name}");
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = remove::RemoveOpts {
+                resource_type: rt,
+                name: &name,
+                project_dir: &project_dir,
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match remove::run(&opts) {
+                Ok(result) => {
+                    if save
+                        && let Err(e) =
+                            save::remove_from_manifest(&project_dir, rt, &name, cli.json)
+                    {
+                        exit_with_error(&e, cli.json);
+                    }
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
         Command::List { resource_type, .. } => {
             println!("relava list {resource_type}");
