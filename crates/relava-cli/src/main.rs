@@ -16,6 +16,7 @@ mod registry;
 mod remove;
 mod resolver;
 mod save;
+mod server;
 mod tools;
 mod update;
 mod validate;
@@ -365,13 +366,19 @@ fn main() {
         }
         Command::Server { action } => match action {
             ServerAction::Start { port, daemon } => {
-                println!("relava server start --port {port} --daemon={daemon}");
+                if let Err(e) = server::start(port, daemon, cli.json, cli.verbose) {
+                    exit_with_error(&e, cli.json);
+                }
             }
             ServerAction::Stop => {
-                println!("relava server stop");
+                if let Err(e) = server::stop(cli.json, cli.verbose) {
+                    exit_with_error(&e, cli.json);
+                }
             }
             ServerAction::Status => {
-                println!("relava server status");
+                if let Err(e) = server::status(cli.json, cli.verbose) {
+                    exit_with_error(&e, cli.json);
+                }
             }
         },
         Command::Doctor => {
