@@ -142,6 +142,24 @@ pub enum Command {
     /// Check health of Relava installation and project
     Doctor,
 
+    /// Disable an installed resource (appends .disabled suffix)
+    Disable {
+        /// Resource type
+        resource_type: String,
+
+        /// Resource name
+        name: String,
+    },
+
+    /// Enable a disabled resource (removes .disabled suffix)
+    Enable {
+        /// Resource type
+        resource_type: String,
+
+        /// Resource name
+        name: String,
+    },
+
     /// Import an existing resource directory into the registry
     Import {
         /// Resource type

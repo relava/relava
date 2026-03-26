@@ -1,7 +1,9 @@
 mod bulk_install;
 mod cache;
 mod cli;
+mod disable;
 mod doctor;
+mod enable;
 mod env_check;
 mod import;
 mod info;
@@ -357,6 +359,58 @@ fn main() {
             }
             if !result.is_healthy() {
                 std::process::exit(1);
+            }
+        }
+        Command::Disable {
+            resource_type,
+            name,
+        } => {
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = disable::DisableOpts {
+                resource_type: rt,
+                name: &name,
+                project_dir: &project_dir,
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match disable::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
+        }
+        Command::Enable {
+            resource_type,
+            name,
+        } => {
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = enable::EnableOpts {
+                resource_type: rt,
+                name: &name,
+                project_dir: &project_dir,
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match enable::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
             }
         }
         Command::Import {
