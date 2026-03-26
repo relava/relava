@@ -34,6 +34,14 @@ pub fn run(opts: &DisableOpts) -> Result<DisableResult, String> {
     let active_path = install::resource_path(opts.project_dir, opts.resource_type, opts.name);
     let disabled_path = disabled_path_for(opts.project_dir, opts.resource_type, opts.name);
 
+    // Conflict: both active and disabled versions exist
+    if active_path.exists() && disabled_path.exists() {
+        return Err(format!(
+            "conflict: both active and disabled versions of {} '{}' exist; resolve manually",
+            opts.resource_type, opts.name
+        ));
+    }
+
     // Already disabled?
     if disabled_path.exists() {
         if !opts.json {
@@ -110,7 +118,7 @@ pub fn is_disabled(project_dir: &Path, resource_type: ResourceType, name: &str) 
 }
 
 /// Format a path relative to the project directory for display.
-fn relative_display(path: &Path, project_dir: &Path) -> String {
+pub(crate) fn relative_display(path: &Path, project_dir: &Path) -> String {
     path.strip_prefix(project_dir)
         .unwrap_or(path)
         .to_string_lossy()
@@ -263,6 +271,31 @@ mod tests {
         };
         let result = run(&opts);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn disable_conflict_both_exist_errors() {
+        let root = temp_dir();
+
+        // Create both active and disabled versions
+        let active = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("SKILL.md"), "# Active").unwrap();
+
+        let disabled = root.path().join(".claude/skills/denden.disabled");
+        fs::create_dir_all(&disabled).unwrap();
+        fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
+
+        let opts = DisableOpts {
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+        let result = run(&opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("conflict"));
     }
 
     #[test]

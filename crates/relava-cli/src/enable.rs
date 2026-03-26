@@ -2,7 +2,7 @@ use std::path::Path;
 
 use relava_types::validate::{self, ResourceType};
 
-use crate::disable;
+use crate::disable::{self, relative_display};
 use crate::install;
 
 /// Options for the enable command.
@@ -33,6 +33,14 @@ pub fn run(opts: &EnableOpts) -> Result<EnableResult, String> {
 
     let active_path = install::resource_path(opts.project_dir, opts.resource_type, opts.name);
     let disabled_path = disable::disabled_path_for(opts.project_dir, opts.resource_type, opts.name);
+
+    // Conflict: both active and disabled versions exist
+    if active_path.exists() && disabled_path.exists() {
+        return Err(format!(
+            "conflict: both active and disabled versions of {} '{}' exist; resolve manually",
+            opts.resource_type, opts.name
+        ));
+    }
 
     // Already active?
     if active_path.exists() {
@@ -83,14 +91,6 @@ pub fn run(opts: &EnableOpts) -> Result<EnableResult, String> {
         restored_path: display,
         was_enabled: true,
     })
-}
-
-/// Format a path relative to the project directory for display.
-fn relative_display(path: &Path, project_dir: &Path) -> String {
-    path.strip_prefix(project_dir)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -198,6 +198,31 @@ mod tests {
         let result = run(&opts).unwrap();
         assert!(!result.was_enabled);
         assert!(skill_dir.exists());
+    }
+
+    #[test]
+    fn enable_conflict_both_exist_errors() {
+        let root = temp_dir();
+
+        // Create both active and disabled versions
+        let active = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("SKILL.md"), "# Active").unwrap();
+
+        let disabled = root.path().join(".claude/skills/denden.disabled");
+        fs::create_dir_all(&disabled).unwrap();
+        fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
+
+        let opts = EnableOpts {
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+        let result = run(&opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("conflict"));
     }
 
     #[test]
