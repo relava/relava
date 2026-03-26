@@ -4,6 +4,7 @@ mod env_check;
 mod init;
 mod install;
 mod registry;
+mod resolver;
 mod tools;
 
 use clap::Parser;
@@ -143,8 +144,68 @@ fn main() {
         Command::Resolve {
             resource_type,
             name,
+            version,
         } => {
-            println!("relava resolve {resource_type} {name}");
+            let rt = match install::parse_resource_type(&resource_type) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let client = registry::RegistryClient::new(&cli.server);
+            let cache_dir = dirs::home_dir()
+                .unwrap_or_else(|| {
+                    eprintln!("cannot determine home directory");
+                    std::process::exit(1);
+                })
+                .join(".relava")
+                .join("cache");
+            let cache = cache::DownloadCache::new(cache_dir);
+            let version_pins = install::load_version_pins(&project_dir, rt);
+
+            let provider = resolver::RegistryDepProvider::new(
+                &client, &cache, &project_dir, version_pins,
+            );
+
+            // If a specific version was requested, resolve it first
+            // and use it as a pin for the root resource
+            if let Some(ref v) = version {
+                if cli.verbose {
+                    eprintln!("resolving {resource_type} {name}@{v}...");
+                }
+            }
+
+            match resolver::resolve(&provider, rt, &name) {
+                Ok(result) => {
+                    if cli.json {
+                        match serde_json::to_string_pretty(&result.to_json_output()) {
+                            Ok(json) => println!("{json}"),
+                            Err(e) => {
+                                eprintln!("failed to serialize result: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        print!("{}", result.tree.display());
+                    }
+                }
+                Err(e) => {
+                    if cli.json {
+                        let err_json = serde_json::json!({ "error": e.to_string() });
+                        match serde_json::to_string_pretty(&err_json) {
+                            Ok(json) => println!("{json}"),
+                            Err(se) => eprintln!("failed to serialize error: {se}: {e}"),
+                        }
+                    } else {
+                        eprintln!("{e}");
+                    }
+                    std::process::exit(1);
+                }
+            }
         }
         Command::Server { action } => match action {
             ServerAction::Start { port, daemon } => {

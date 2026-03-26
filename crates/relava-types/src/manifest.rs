@@ -46,7 +46,7 @@ pub struct EnvSpec {
 ///         description: GitHub API token
 /// ---
 /// ```
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ResourceMeta {
     /// Skill dependency names
     pub skills: Vec<String>,
