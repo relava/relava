@@ -35,6 +35,12 @@ fn encode_base64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
+/// Assert that a file exists and its content matches `expected`.
+fn assert_file_content(path: &Path, expected: &str) {
+    assert!(path.exists(), "expected file to exist: {}", path.display());
+    assert_eq!(fs::read_to_string(path).unwrap(), expected);
+}
+
 /// Create a mock server that serves version list and download endpoints
 /// for a given resource.
 fn mock_versions(
@@ -93,6 +99,20 @@ fn mock_download(
         .create()
 }
 
+/// Mock both version listing and download for a single-version resource.
+/// Returns both mocks (must stay alive for the test's duration).
+fn mock_resource(
+    server: &mut mockito::ServerGuard,
+    resource_type: &str,
+    name: &str,
+    version: &str,
+    files: &[(&str, &[u8])],
+) -> (mockito::Mock, mockito::Mock) {
+    let ver = mock_versions(server, resource_type, name, &[version]);
+    let dl = mock_download(server, resource_type, name, version, files);
+    (ver, dl)
+}
+
 fn mock_publish(
     server: &mut mockito::ServerGuard,
     resource_type: &str,
@@ -137,6 +157,59 @@ fn mock_not_found(
         .create()
 }
 
+/// Install a resource via mocked registry (single version, default opts).
+/// Mocks are created and dropped after install completes.
+fn install_resource(
+    server: &mut mockito::ServerGuard,
+    project_dir: &Path,
+    resource_type: ResourceType,
+    name: &str,
+    version: &str,
+    files: &[(&str, &[u8])],
+) -> install::InstallResult {
+    let rt = resource_type.to_string();
+    let _mocks = mock_resource(server, &rt, name, version, files);
+    install::run(&install::InstallOpts {
+        server_url: &server.url(),
+        resource_type,
+        name,
+        version_pin: None,
+        project_dir,
+        global: false,
+        json: true,
+        verbose: false,
+        yes: true,
+    })
+    .expect("install should succeed")
+}
+
+/// List resources with default opts.
+fn list_resources(project_dir: &Path, resource_type: Option<ResourceType>) -> list::ListResult {
+    list::run(&list::ListOpts {
+        resource_type,
+        project_dir,
+        json: true,
+        _verbose: false,
+    })
+    .expect("list should succeed")
+}
+
+/// Remove a resource with default opts.
+fn remove_resource(
+    project_dir: &Path,
+    resource_type: ResourceType,
+    name: &str,
+) -> remove::RemoveResult {
+    remove::run(&remove::RemoveOpts {
+        resource_type,
+        name,
+        project_dir,
+        json: true,
+        verbose: false,
+    })
+    .expect("remove should succeed")
+}
+
 /// Populate the download cache directly (bypassing HTTP) for tests that
 /// only need cached data without running the download mock.
 fn populate_cache(
@@ -177,11 +250,12 @@ fn write_manifest(project_dir: &Path, content: &str) {
 fn lifecycle_skill_install_list_update_remove() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
+
     // --- Step 1: Install skill v1.0.0 ---
-    let _mock_ver = mock_versions(&mut server, "skill", "code-review", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    let install_result = install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "code-review",
         "1.0.0",
         &[
@@ -190,53 +264,27 @@ fn lifecycle_skill_install_list_update_remove() {
         ],
     );
 
-    let install_result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "code-review",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .expect("install should succeed");
-
     assert_eq!(install_result.name, "code-review");
     assert_eq!(install_result.version, "1.0.0");
     assert_eq!(install_result.files.len(), 2);
 
-    // Verify files on disk
     let skill_dir = project.path().join(".claude/skills/code-review");
-    assert!(skill_dir.join("SKILL.md").exists());
-    assert!(skill_dir.join("templates/checklist.md").exists());
-    assert_eq!(
-        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
-        "# Code Review\nVersion 1 content"
+    assert_file_content(
+        &skill_dir.join("SKILL.md"),
+        "# Code Review\nVersion 1 content",
     );
+    assert!(skill_dir.join("templates/checklist.md").exists());
 
     // --- Step 2: List resources ---
-    let list_result = list::run(&list::ListOpts {
-        resource_type: None,
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .expect("list should succeed");
-
+    let list_result = list_resources(project.path(), None);
     assert_eq!(list_result.resources.len(), 1);
     assert_eq!(list_result.resources[0].name, "code-review");
     assert_eq!(list_result.resources[0].resource_type, "skill");
     assert_eq!(list_result.resources[0].status, "active");
 
     // --- Step 3: Update to v2.0.0 ---
-    // Write relava.toml so update knows the installed version
     write_manifest(project.path(), "[skills]\ncode-review = \"*\"\n");
 
-    // Clear old mocks and set up v2 mocks
-    drop(_mock_ver);
-    drop(_mock_dl);
     let _mock_ver2 = mock_versions(&mut server, "skill", "code-review", &["1.0.0", "2.0.0"]);
     let _mock_dl2 = mock_download(
         &mut server,
@@ -265,34 +313,17 @@ fn lifecycle_skill_install_list_update_remove() {
 
     assert_eq!(update_result.updated.len(), 1);
     assert_eq!(update_result.updated[0].new_version, "2.0.0");
-
-    // Verify updated content on disk
-    assert_eq!(
-        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
-        "# Code Review\nVersion 2 updated"
+    assert_file_content(
+        &skill_dir.join("SKILL.md"),
+        "# Code Review\nVersion 2 updated",
     );
 
     // --- Step 4: Remove ---
-    let remove_result = remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Skill,
-        name: "code-review",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .expect("remove should succeed");
-
+    let remove_result = remove_resource(project.path(), ResourceType::Skill, "code-review");
     assert!(remove_result.was_removed);
     assert!(!skill_dir.exists());
 
-    // List should be empty now
-    let list_after = list::run(&list::ListOpts {
-        resource_type: None,
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
+    let list_after = list_resources(project.path(), None);
     assert!(list_after.resources.is_empty());
 }
 
@@ -305,63 +336,27 @@ fn lifecycle_agent_install_list_remove() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "agent", "debugger", &["0.5.0"]);
-    let _mock_dl = mock_download(
+    let result = install_resource(
         &mut server,
-        "agent",
+        project.path(),
+        ResourceType::Agent,
         "debugger",
         "0.5.0",
         &[("debugger.md", b"# Debugger Agent\nDebug instructions")],
     );
 
-    // Install
-    let result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Agent,
-        name: "debugger",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .expect("install agent should succeed");
-
     assert_eq!(result.resource_type, "agent");
     assert_eq!(result.version, "0.5.0");
 
-    // Verify file on disk
     let agent_file = project.path().join(".claude/agents/debugger.md");
-    assert!(agent_file.exists());
-    assert_eq!(
-        fs::read_to_string(&agent_file).unwrap(),
-        "# Debugger Agent\nDebug instructions"
-    );
+    assert_file_content(&agent_file, "# Debugger Agent\nDebug instructions");
 
-    // List
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Agent),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
-
+    let list_result = list_resources(project.path(), Some(ResourceType::Agent));
     assert_eq!(list_result.resources.len(), 1);
     assert_eq!(list_result.resources[0].name, "debugger");
     assert_eq!(list_result.resources[0].resource_type, "agent");
 
-    // Remove
-    let remove_result = remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Agent,
-        name: "debugger",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
-
+    let remove_result = remove_resource(project.path(), ResourceType::Agent, "debugger");
     assert!(remove_result.was_removed);
     assert!(!agent_file.exists());
 }
@@ -375,51 +370,26 @@ fn lifecycle_command_install_list_remove() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "command", "deploy", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    let result = install_resource(
         &mut server,
-        "command",
+        project.path(),
+        ResourceType::Command,
         "deploy",
         "1.0.0",
         &[("deploy.md", b"# Deploy Command\nDeploy steps")],
     );
-
-    let result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Command,
-        name: "deploy",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     assert_eq!(result.resource_type, "command");
 
     let cmd_file = project.path().join(".claude/commands/deploy.md");
     assert!(cmd_file.exists());
 
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Command),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
+    let list_result = list_resources(project.path(), Some(ResourceType::Command));
     assert_eq!(list_result.resources.len(), 1);
     assert_eq!(list_result.resources[0].name, "deploy");
 
-    remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Command,
-        name: "deploy",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
+    let remove_result = remove_resource(project.path(), ResourceType::Command, "deploy");
+    assert!(remove_result.was_removed);
     assert!(!cmd_file.exists());
 }
 
@@ -432,51 +402,26 @@ fn lifecycle_rule_install_list_remove() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "rule", "no-console-log", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    let result = install_resource(
         &mut server,
-        "rule",
+        project.path(),
+        ResourceType::Rule,
         "no-console-log",
         "1.0.0",
         &[("no-console-log.md", b"# No Console Log\nAvoid console.log")],
     );
-
-    let result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Rule,
-        name: "no-console-log",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     assert_eq!(result.resource_type, "rule");
 
     let rule_file = project.path().join(".claude/rules/no-console-log.md");
     assert!(rule_file.exists());
 
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Rule),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
+    let list_result = list_resources(project.path(), Some(ResourceType::Rule));
     assert_eq!(list_result.resources.len(), 1);
     assert_eq!(list_result.resources[0].name, "no-console-log");
 
-    remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Rule,
-        name: "no-console-log",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
+    let remove_result = remove_resource(project.path(), ResourceType::Rule, "no-console-log");
+    assert!(remove_result.was_removed);
     assert!(!rule_file.exists());
 }
 
@@ -489,28 +434,14 @@ fn lifecycle_install_disable_enable_remove() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "skill", "git-workflow", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "git-workflow",
         "1.0.0",
         &[("SKILL.md", b"# Git Workflow\nBranching guide")],
     );
-
-    // Install
-    install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "git-workflow",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     let active_path = project.path().join(".claude/skills/git-workflow");
     let disabled_path = project.path().join(".claude/skills/.disabled/git-workflow");
@@ -530,13 +461,7 @@ fn lifecycle_install_disable_enable_remove() {
     assert!(disabled_path.join("SKILL.md").exists());
 
     // List shows disabled
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Skill),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
+    let list_result = list_resources(project.path(), Some(ResourceType::Skill));
     assert_eq!(list_result.resources.len(), 1);
     assert_eq!(list_result.resources[0].status, "disabled");
 
@@ -554,24 +479,12 @@ fn lifecycle_install_disable_enable_remove() {
     assert!(!disabled_path.exists());
 
     // List shows active again
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Skill),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
+    let list_result = list_resources(project.path(), Some(ResourceType::Skill));
     assert_eq!(list_result.resources[0].status, "active");
 
     // Remove
-    remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Skill,
-        name: "git-workflow",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
+    let remove_result = remove_resource(project.path(), ResourceType::Skill, "git-workflow");
+    assert!(remove_result.was_removed);
     assert!(!active_path.exists());
 }
 
@@ -584,27 +497,14 @@ fn lifecycle_agent_disable_enable() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "agent", "reviewer", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    install_resource(
         &mut server,
-        "agent",
+        project.path(),
+        ResourceType::Agent,
         "reviewer",
         "1.0.0",
         &[("reviewer.md", b"# Reviewer\nReview instructions")],
     );
-
-    install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Agent,
-        name: "reviewer",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     let active_path = project.path().join(".claude/agents/reviewer.md");
     let disabled_path = project.path().join(".claude/agents/.disabled/reviewer.md");
@@ -676,12 +576,11 @@ fn install_with_exact_version_pin() {
     })
     .unwrap();
 
-    // Should install v1.0.0 despite v2.0.0 being available
     assert_eq!(result.version, "1.0.0");
-    // Verify the v1 content is on disk (not v2)
-    let content =
-        fs::read_to_string(project.path().join(".claude/skills/pinned-skill/SKILL.md")).unwrap();
-    assert_eq!(content, "# Pinned v1");
+    assert_file_content(
+        &project.path().join(".claude/skills/pinned-skill/SKILL.md"),
+        "# Pinned v1",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -693,30 +592,16 @@ fn install_save_writes_manifest() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    // Create empty relava.toml
     write_manifest(project.path(), "");
 
-    let _mock_ver = mock_versions(&mut server, "agent", "saver", &["1.5.0"]);
-    let _mock_dl = mock_download(
+    let result = install_resource(
         &mut server,
-        "agent",
+        project.path(),
+        ResourceType::Agent,
         "saver",
         "1.5.0",
         &[("saver.md", b"# Saver Agent")],
     );
-
-    let result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Agent,
-        name: "saver",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     // Simulate --save (main.rs calls save::add_to_manifest after install)
     save::add_to_manifest(
@@ -728,7 +613,6 @@ fn install_save_writes_manifest() {
     )
     .unwrap();
 
-    // Verify manifest was updated
     let content = fs::read_to_string(project.path().join("relava.toml")).unwrap();
     assert!(content.contains("saver"));
     assert!(content.contains("1.5.0"));
@@ -743,7 +627,6 @@ fn import_publishes_skill_to_registry() {
     let mut server = mockito::Server::new();
     let source = temp_dir();
 
-    // Create a skill directory to import
     let skill_dir = source.path().join("my-importer");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(
@@ -836,7 +719,6 @@ fn import_then_install_round_trip() {
     let source = temp_dir();
     let project = temp_dir();
 
-    // Create a skill to import
     let skill_dir = source.path().join("roundtrip-skill");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(
@@ -857,11 +739,11 @@ fn import_then_install_round_trip() {
     })
     .unwrap();
 
-    // Install from registry (mock the download endpoint with same content)
-    let _mock_ver = mock_versions(&mut server, "skill", "roundtrip-skill", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    // Install from registry
+    let install_result = install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "roundtrip-skill",
         "1.0.0",
         &[(
@@ -869,19 +751,6 @@ fn import_then_install_round_trip() {
             b"---\nname: roundtrip-skill\nversion: 1.0.0\n---\n# Round Trip Content",
         )],
     );
-
-    let install_result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "roundtrip-skill",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
 
     assert_eq!(install_result.version, "1.0.0");
     assert!(
@@ -936,7 +805,6 @@ fn update_all_updates_multiple_resources() {
     )
     .unwrap();
 
-    // Write manifest with wildcard pins
     write_manifest(
         project.path(),
         "[skills]\nalpha = \"*\"\n\n[agents]\nbeta = \"*\"\n",
@@ -972,16 +840,11 @@ fn update_all_updates_multiple_resources() {
     .unwrap();
 
     assert_eq!(result.updated.len(), 2);
-
-    // Verify files were updated
-    assert_eq!(
-        fs::read_to_string(project.path().join(".claude/skills/alpha/SKILL.md")).unwrap(),
-        "# Alpha v2"
+    assert_file_content(
+        &project.path().join(".claude/skills/alpha/SKILL.md"),
+        "# Alpha v2",
     );
-    assert_eq!(
-        fs::read_to_string(project.path().join(".claude/agents/beta.md")).unwrap(),
-        "# Beta v2"
-    );
+    assert_file_content(&project.path().join(".claude/agents/beta.md"), "# Beta v2");
 }
 
 // ---------------------------------------------------------------------------
@@ -994,7 +857,6 @@ fn update_skips_exact_pinned_version() {
     let cache_root = temp_dir();
     let cache = DownloadCache::new(cache_root.path().to_path_buf());
 
-    // Pre-install skill
     populate_cache(
         &cache,
         ResourceType::Skill,
@@ -1011,10 +873,8 @@ fn update_skips_exact_pinned_version() {
     )
     .unwrap();
 
-    // Pin exact version in manifest
     write_manifest(project.path(), "[skills]\npinned = \"1.0.0\"\n");
 
-    // No server needed — pinned resources skip the registry check
     let server = mockito::Server::new();
     let result = update::run(&update::UpdateOpts {
         server_url: &server.url(),
@@ -1045,33 +905,17 @@ fn install_overwrites_existing_skill() {
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "# Old content").unwrap();
 
-    let _mock_ver = mock_versions(&mut server, "skill", "overwrite-me", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    let result = install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "overwrite-me",
         "1.0.0",
         &[("SKILL.md", b"# New content from registry")],
     );
 
-    let result = install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "overwrite-me",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
-
     assert!(!result.overwritten.is_empty());
-    assert_eq!(
-        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
-        "# New content from registry"
-    );
+    assert_file_content(&skill_dir.join("SKILL.md"), "# New content from registry");
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,80 +927,32 @@ fn list_all_resource_types_after_install() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    // Install one of each type
-    struct TypeInfo {
-        rt: ResourceType,
-        rt_str: &'static str,
-        name: &'static str,
-        file_name: &'static str,
-        content: &'static [u8],
-    }
-
-    let types_and_names = [
-        TypeInfo {
-            rt: ResourceType::Skill,
-            rt_str: "skill",
-            name: "my-skill",
-            file_name: "SKILL.md",
-            content: b"# Skill",
-        },
-        TypeInfo {
-            rt: ResourceType::Agent,
-            rt_str: "agent",
-            name: "my-agent",
-            file_name: "my-agent.md",
-            content: b"# Agent",
-        },
-        TypeInfo {
-            rt: ResourceType::Command,
-            rt_str: "command",
-            name: "my-command",
-            file_name: "my-command.md",
-            content: b"# Command",
-        },
-        TypeInfo {
-            rt: ResourceType::Rule,
-            rt_str: "rule",
-            name: "my-rule",
-            file_name: "my-rule.md",
-            content: b"# Rule",
-        },
+    let resources: &[(ResourceType, &str, &str, &[u8])] = &[
+        (ResourceType::Skill, "my-skill", "SKILL.md", b"# Skill"),
+        (ResourceType::Agent, "my-agent", "my-agent.md", b"# Agent"),
+        (
+            ResourceType::Command,
+            "my-command",
+            "my-command.md",
+            b"# Command",
+        ),
+        (ResourceType::Rule, "my-rule", "my-rule.md", b"# Rule"),
     ];
 
-    for info in &types_and_names {
-        let _mv = mock_versions(&mut server, info.rt_str, info.name, &["1.0.0"]);
-        let _md = mock_download(
+    for &(rt, name, file_name, content) in resources {
+        install_resource(
             &mut server,
-            info.rt_str,
-            info.name,
+            project.path(),
+            rt,
+            name,
             "1.0.0",
-            &[(info.file_name, info.content)],
+            &[(file_name, content)],
         );
-
-        install::run(&install::InstallOpts {
-            server_url: &server.url(),
-            resource_type: info.rt,
-            name: info.name,
-            version_pin: None,
-            project_dir: project.path(),
-            global: false,
-            json: true,
-            verbose: false,
-            yes: true,
-        })
-        .unwrap();
     }
 
-    // List all
-    let result = list::run(&list::ListOpts {
-        resource_type: None,
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
-
+    let result = list_resources(project.path(), None);
     assert_eq!(result.resources.len(), 4);
+
     let names: Vec<&str> = result.resources.iter().map(|e| e.name.as_str()).collect();
     assert!(names.contains(&"my-skill"));
     assert!(names.contains(&"my-agent"));
@@ -1238,15 +1034,7 @@ fn install_invalid_slug_returns_error() {
 fn remove_nonexistent_resource_is_not_error() {
     let project = temp_dir();
 
-    let result = remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Skill,
-        name: "ghost",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
-
+    let result = remove_resource(project.path(), ResourceType::Skill, "ghost");
     assert!(!result.was_removed);
 }
 
@@ -1365,39 +1153,18 @@ fn list_shows_manifest_versions() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "skill", "versioned", &["2.3.0"]);
-    let _mock_dl = mock_download(
+    install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "versioned",
         "2.3.0",
         &[("SKILL.md", b"# Versioned")],
     );
 
-    install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "versioned",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
-
-    // Write manifest with the installed version
     write_manifest(project.path(), "[skills]\nversioned = \"2.3.0\"\n");
 
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Skill),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
-
+    let list_result = list_resources(project.path(), Some(ResourceType::Skill));
     assert_eq!(list_result.resources[0].version, "2.3.0");
 }
 
@@ -1410,45 +1177,22 @@ fn remove_with_save_updates_manifest() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    let _mock_ver = mock_versions(&mut server, "skill", "removable", &["1.0.0"]);
-    let _mock_dl = mock_download(
+    install_resource(
         &mut server,
-        "skill",
+        project.path(),
+        ResourceType::Skill,
         "removable",
         "1.0.0",
         &[("SKILL.md", b"# Removable")],
     );
 
-    install::run(&install::InstallOpts {
-        server_url: &server.url(),
-        resource_type: ResourceType::Skill,
-        name: "removable",
-        version_pin: None,
-        project_dir: project.path(),
-        global: false,
-        json: true,
-        verbose: false,
-        yes: true,
-    })
-    .unwrap();
-
-    // Write manifest
     write_manifest(project.path(), "[skills]\nremovable = \"1.0.0\"\n");
 
-    // Remove
-    remove::run(&remove::RemoveOpts {
-        resource_type: ResourceType::Skill,
-        name: "removable",
-        project_dir: project.path(),
-        json: true,
-        verbose: false,
-    })
-    .unwrap();
+    remove_resource(project.path(), ResourceType::Skill, "removable");
 
     // Simulate --save (main.rs calls save::remove_from_manifest after remove)
     save::remove_from_manifest(project.path(), ResourceType::Skill, "removable", true).unwrap();
 
-    // Verify manifest no longer has the entry
     let content = fs::read_to_string(project.path().join("relava.toml")).unwrap();
     assert!(!content.contains("removable"));
 }
@@ -1462,22 +1206,17 @@ fn install_skill_with_dependency() {
     let mut server = mockito::Server::new();
     let project = temp_dir();
 
-    // Parent skill depends on "dep-skill" via frontmatter
     let parent_content = b"---\nname: parent-skill\nmetadata:\n  relava:\n    skills:\n      - dep-skill\n---\n# Parent";
 
-    // Mock parent: versions + download
-    let _mock_parent_ver = mock_versions(&mut server, "skill", "parent-skill", &["1.0.0"]);
-    let _mock_parent_dl = mock_download(
+    // Mock parent and dependency
+    let _mocks_parent = mock_resource(
         &mut server,
         "skill",
         "parent-skill",
         "1.0.0",
         &[("SKILL.md", parent_content)],
     );
-
-    // Mock dependency: versions + download
-    let _mock_dep_ver = mock_versions(&mut server, "skill", "dep-skill", &["1.0.0"]);
-    let _mock_dep_dl = mock_download(
+    let _mocks_dep = mock_resource(
         &mut server,
         "skill",
         "dep-skill",
@@ -1498,10 +1237,7 @@ fn install_skill_with_dependency() {
     })
     .unwrap();
 
-    // Parent should be installed
     assert_eq!(result.name, "parent-skill");
-
-    // Dependency should also be installed
     assert!(
         !result.dependencies.is_empty(),
         "should have dependency results"
@@ -1509,28 +1245,11 @@ fn install_skill_with_dependency() {
     assert_eq!(result.dependencies[0].name, "dep-skill");
 
     // Both should exist on disk
-    assert!(
-        project
-            .path()
-            .join(".claude/skills/parent-skill/SKILL.md")
-            .exists()
-    );
-    assert!(
-        project
-            .path()
-            .join(".claude/skills/dep-skill/SKILL.md")
-            .exists()
-    );
+    let skills_dir = project.path().join(".claude/skills");
+    assert!(skills_dir.join("parent-skill/SKILL.md").exists());
+    assert!(skills_dir.join("dep-skill/SKILL.md").exists());
 
-    // List should show both
-    let list_result = list::run(&list::ListOpts {
-        resource_type: Some(ResourceType::Skill),
-        project_dir: project.path(),
-        json: true,
-        _verbose: false,
-    })
-    .unwrap();
-
+    let list_result = list_resources(project.path(), Some(ResourceType::Skill));
     assert_eq!(list_result.resources.len(), 2);
 }
 
@@ -1573,7 +1292,6 @@ fn disable_conflict_when_both_exist() {
 fn install_server_unreachable_returns_error() {
     let project = temp_dir();
 
-    // Use a port that nothing is listening on
     let result = install::run(&install::InstallOpts {
         server_url: "http://127.0.0.1:1",
         resource_type: ResourceType::Skill,
@@ -1587,4 +1305,96 @@ fn install_server_unreachable_returns_error() {
     });
 
     assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Remove a disabled resource
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_disabled_resource_warns_not_installed() {
+    let mut server = mockito::Server::new();
+    let project = temp_dir();
+
+    // Install and disable
+    install_resource(
+        &mut server,
+        project.path(),
+        ResourceType::Skill,
+        "to-remove",
+        "1.0.0",
+        &[("SKILL.md", b"# To Remove")],
+    );
+
+    disable::run(&disable::DisableOpts {
+        resource_type: ResourceType::Skill,
+        name: "to-remove",
+        project_dir: project.path(),
+        json: true,
+        verbose: false,
+    })
+    .unwrap();
+
+    // Verify disabled state
+    let disabled_path = project.path().join(".claude/skills/.disabled/to-remove");
+    assert!(disabled_path.join("SKILL.md").exists());
+
+    // Remove while disabled — remove checks the active path only,
+    // so it reports "not installed" since the resource is in .disabled/
+    let result = remove_resource(project.path(), ResourceType::Skill, "to-remove");
+    assert!(!result.was_removed);
+    // The disabled files are still on disk (not cleaned up by remove)
+    assert!(disabled_path.join("SKILL.md").exists());
+}
+
+// ---------------------------------------------------------------------------
+// Update a disabled resource
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_disabled_resource_reports_not_installed() {
+    let mut server = mockito::Server::new();
+    let project = temp_dir();
+
+    // Install, write manifest, then disable
+    install_resource(
+        &mut server,
+        project.path(),
+        ResourceType::Skill,
+        "disabled-update",
+        "1.0.0",
+        &[("SKILL.md", b"# Version 1")],
+    );
+
+    write_manifest(project.path(), "[skills]\ndisabled-update = \"*\"\n");
+
+    disable::run(&disable::DisableOpts {
+        resource_type: ResourceType::Skill,
+        name: "disabled-update",
+        project_dir: project.path(),
+        json: true,
+        verbose: false,
+    })
+    .unwrap();
+
+    // Update targets the active path — disabled resources are "not installed"
+    let result = update::run(&update::UpdateOpts {
+        server_url: &server.url(),
+        resource_type: Some(ResourceType::Skill),
+        name: Some("disabled-update"),
+        all: false,
+        project_dir: project.path(),
+        json: true,
+        verbose: false,
+    });
+
+    // Update errors because is_installed() checks the active path
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not installed"));
+
+    // Disabled files should be untouched
+    let disabled_path = project
+        .path()
+        .join(".claude/skills/.disabled/disabled-update");
+    assert_file_content(&disabled_path.join("SKILL.md"), "# Version 1");
 }
