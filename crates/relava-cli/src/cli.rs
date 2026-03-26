@@ -127,6 +127,10 @@ pub enum Command {
 
         /// Resource name
         name: String,
+
+        /// Version to resolve (default: latest)
+        #[arg(long)]
+        version: Option<String>,
     },
 
     /// Manage the local registry server

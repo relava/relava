@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::cache::DownloadCache;
 use crate::env_check::{self, EnvResult, EnvStatus};
 use crate::registry::RegistryClient;
+use crate::resolver::{self, RegistryDepProvider};
 use crate::tools::{self, ToolResult, ToolStatus};
 use relava_types::manifest::ResourceMeta;
 use relava_types::validate::{self, AgentType, ResourceType};
@@ -21,6 +23,16 @@ pub struct InstallOpts<'a> {
     pub yes: bool,
 }
 
+/// Result of installing a transitive dependency.
+#[derive(Debug, serde::Serialize)]
+pub struct DepInstallResult {
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub name: String,
+    pub version: String,
+    pub status: String,
+}
+
 /// Result of a successful install, used for JSON output.
 #[derive(Debug, serde::Serialize)]
 pub struct InstallResult {
@@ -36,6 +48,9 @@ pub struct InstallResult {
     pub tools: Vec<ToolResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvResult>,
+    /// Transitive dependencies that were installed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<DepInstallResult>,
 }
 
 /// Result of writing files to the project directory.
@@ -47,6 +62,9 @@ struct WriteResult {
 }
 
 /// Run `relava install <type> <name>`.
+///
+/// Resolves transitive dependencies via DFS, installs them leaf-first,
+/// then installs the root resource.
 pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     // Validate the resource name
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
@@ -76,6 +94,9 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         .resolve_version(opts.resource_type, opts.name, opts.version_pin)
         .map_err(|e| e.to_string())?;
 
+    // Resolve transitive dependencies
+    let dep_results = resolve_and_install_deps(opts, &client, &cache, &install_root)?;
+
     if !opts.json {
         println!(
             "Installing {} {}@{}...",
@@ -84,24 +105,15 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     }
 
     // Check cache first, download if needed
-    let file_paths = if cache.is_cached(opts.resource_type, opts.name, &version) {
-        if opts.verbose {
-            eprintln!("  using cached version");
-        }
-        cache
-            .list_files(opts.resource_type, opts.name, &version)
-            .map_err(|e| e.to_string())?
-    } else {
-        if opts.verbose {
-            eprintln!("  downloading from {}", opts.server_url);
-        }
-        let response = client
-            .download(opts.resource_type, opts.name, &version)
-            .map_err(|e| e.to_string())?;
-        cache
-            .store(opts.resource_type, opts.name, &version, &response)
-            .map_err(|e| e.to_string())?
-    };
+    let file_paths = download_to_cache(
+        &client,
+        &cache,
+        opts.resource_type,
+        opts.name,
+        &version,
+        opts.server_url,
+        opts.verbose,
+    )?;
 
     // Write files to the correct Claude Code location
     let WriteResult {
@@ -158,7 +170,204 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         overwritten,
         tools: tool_results,
         env: env_results,
+        dependencies: dep_results,
     })
+}
+
+/// Download a resource to cache if not already cached. Returns file paths.
+fn download_to_cache(
+    client: &RegistryClient,
+    cache: &DownloadCache,
+    resource_type: ResourceType,
+    name: &str,
+    version: &Version,
+    server_url: &str,
+    verbose: bool,
+) -> Result<Vec<String>, String> {
+    if cache.is_cached(resource_type, name, version) {
+        if verbose {
+            eprintln!("  using cached version");
+        }
+        cache
+            .list_files(resource_type, name, version)
+            .map_err(|e| e.to_string())
+    } else {
+        if verbose {
+            eprintln!("  downloading from {server_url}");
+        }
+        let response = client
+            .download(resource_type, name, version)
+            .map_err(|e| e.to_string())?;
+        cache
+            .store(resource_type, name, version, &response)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Resolve transitive dependencies and install them in leaf-first order.
+///
+/// Returns the list of installed/skipped dependency results.
+/// The root resource is NOT installed here — only its transitive deps.
+fn resolve_and_install_deps(
+    opts: &InstallOpts,
+    client: &RegistryClient,
+    cache: &DownloadCache,
+    install_root: &Path,
+) -> Result<Vec<DepInstallResult>, String> {
+    // Build version pins from relava.toml if it exists
+    let version_pins = load_version_pins(opts.project_dir, opts.resource_type);
+
+    let provider = RegistryDepProvider::new(client, cache, install_root, version_pins);
+
+    let resolve_result =
+        resolver::resolve(&provider, opts.resource_type, opts.name).map_err(|e| e.to_string())?;
+
+    let deps_to_install = resolve_result.deps_to_install();
+    if deps_to_install.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if !opts.json {
+        let count = deps_to_install.len();
+        let plural = if count == 1 {
+            "dependency"
+        } else {
+            "dependencies"
+        };
+        println!("Resolving {count} {plural}...");
+    }
+
+    let mut results = Vec::new();
+
+    for dep in &resolve_result.install_order {
+        // Skip the root resource (last in install_order)
+        if dep.name == opts.name && dep.resource_type == opts.resource_type.to_string() {
+            continue;
+        }
+
+        if dep.already_installed {
+            if !opts.json {
+                println!(
+                    "  [skip]    {} {}@{} (already installed)",
+                    dep.resource_type, dep.name, dep.version
+                );
+            }
+            results.push(DepInstallResult {
+                resource_type: dep.resource_type.clone(),
+                name: dep.name.clone(),
+                version: dep.version.clone(),
+                status: "skipped".to_string(),
+            });
+            continue;
+        }
+
+        let dep_rt = ResourceType::from_str(&dep.resource_type).map_err(|e| e.to_string())?;
+        let dep_version = Version::parse(&dep.version)
+            .map_err(|e| format!("invalid version for dependency {}: {e}", dep.name))?;
+
+        if !opts.json {
+            println!(
+                "  [dep]     Installing {} {}@{}...",
+                dep.resource_type, dep.name, dep.version
+            );
+        }
+
+        // Download to cache if needed
+        download_to_cache(
+            client,
+            cache,
+            dep_rt,
+            &dep.name,
+            &dep_version,
+            opts.server_url,
+            opts.verbose,
+        )?;
+
+        // Write to project
+        write_to_project(install_root, dep_rt, &dep.name, &dep_version, cache)
+            .map_err(|e| e.to_string())?;
+
+        // Run post-install for skills
+        if dep_rt == ResourceType::Skill {
+            let dep_install_dir = install_root
+                .join(AgentType::Claude.skills_dir())
+                .join(&dep.name);
+            let dep_opts = InstallOpts {
+                server_url: opts.server_url,
+                resource_type: dep_rt,
+                name: &dep.name,
+                version_pin: Some(&dep.version),
+                project_dir: opts.project_dir,
+                global: opts.global,
+                json: opts.json,
+                verbose: opts.verbose,
+                yes: opts.yes,
+            };
+            let (tool_results, env_results) = run_skill_post_install(&dep_opts, &dep_install_dir)?;
+            if !opts.json {
+                for result in &tool_results {
+                    print_tool_result(result);
+                }
+                for result in &env_results {
+                    print_env_result(result);
+                }
+            }
+        }
+
+        results.push(DepInstallResult {
+            resource_type: dep.resource_type.clone(),
+            name: dep.name.clone(),
+            version: dep.version.clone(),
+            status: "installed".to_string(),
+        });
+    }
+
+    Ok(results)
+}
+
+/// Load version pins from relava.toml for the given resource type.
+pub fn load_version_pins(
+    project_dir: &Path,
+    resource_type: ResourceType,
+) -> BTreeMap<String, String> {
+    let toml_path = project_dir.join("relava.toml");
+    if !toml_path.exists() {
+        return BTreeMap::new();
+    }
+    match relava_types::manifest::ProjectManifest::from_file(&toml_path) {
+        Ok(manifest) => match resource_type {
+            ResourceType::Skill => manifest.skills,
+            ResourceType::Agent => manifest.agents,
+            ResourceType::Command => manifest.commands,
+            ResourceType::Rule => manifest.rules,
+        },
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+/// Check if a resource is already installed in the project.
+#[allow(dead_code)] // will be used by `relava remove` for dependency checking
+pub fn is_installed(install_root: &Path, resource_type: ResourceType, name: &str) -> bool {
+    let agent_type = AgentType::Claude;
+    match resource_type {
+        ResourceType::Skill => install_root
+            .join(agent_type.skills_dir())
+            .join(name)
+            .join("SKILL.md")
+            .exists(),
+        ResourceType::Agent => install_root
+            .join(agent_type.agents_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+        ResourceType::Command => install_root
+            .join(agent_type.commands_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+        ResourceType::Rule => install_root
+            .join(agent_type.rules_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+    }
 }
 
 /// Run skill-specific post-install steps: tool checking and env var validation.
@@ -964,6 +1173,7 @@ Review code for security issues.
                 required: true,
                 status: EnvStatus::MissingRequired,
             }],
+            dependencies: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&result).unwrap();
@@ -985,6 +1195,7 @@ Review code for security issues.
             overwritten: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
+            dependencies: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&result).unwrap();
@@ -1223,6 +1434,7 @@ Review code for security issues.
             overwritten: vec!["debugger.md".to_string()],
             tools: Vec::new(),
             env: Vec::new(),
+            dependencies: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&result).unwrap();
@@ -1241,6 +1453,7 @@ Review code for security issues.
             overwritten: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
+            dependencies: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&result).unwrap();
