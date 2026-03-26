@@ -14,24 +14,26 @@ pub fn add_to_manifest(
     version: &str,
     json: bool,
 ) -> Result<(), String> {
-    let toml_path = project_dir.join("relava.toml");
-    if !toml_path.exists() {
-        if !json {
-            eprintln!("[warn] relava.toml not found — skipping --save");
+    let mut action = None;
+    with_manifest(project_dir, json, |manifest| {
+        let section = manifest_section(manifest, resource_type);
+        let old = section.insert(name.to_string(), version.to_string());
+        match old.as_deref() {
+            Some(v) if v == version => {
+                // Same version already recorded — skip write
+                section.insert(name.to_string(), v.to_string());
+                return false;
+            }
+            Some(_) => action = Some("Updated"),
+            None => action = Some("Added"),
         }
-        return Ok(());
-    }
+        true
+    })?;
 
-    let mut manifest = ProjectManifest::from_file(&toml_path)
-        .map_err(|e| format!("failed to read relava.toml: {e}"))?;
-
-    let section = manifest_section(&mut manifest, resource_type);
-    section.insert(name.to_string(), version.to_string());
-
-    write_manifest(&toml_path, &manifest)?;
-
-    if !json {
-        println!("  [save]    Added {name} = \"{version}\" to relava.toml [{resource_type}s]");
+    if let Some(verb) = action
+        && !json
+    {
+        println!("  [save]    {verb} {name} = \"{version}\" in relava.toml [{resource_type}s]");
     }
 
     Ok(())
@@ -47,30 +49,43 @@ pub fn remove_from_manifest(
     name: &str,
     json: bool,
 ) -> Result<(), String> {
+    let changed = with_manifest(project_dir, json, |manifest| {
+        manifest_section(manifest, resource_type)
+            .remove(name)
+            .is_some()
+    })?;
+
+    if changed && !json {
+        println!("  [save]    Removed {name} from relava.toml [{resource_type}s]");
+    }
+
+    Ok(())
+}
+
+/// Load, mutate, and write back relava.toml. Returns `Ok(false)` if the
+/// file does not exist or the closure signals no change. Only writes when
+/// the closure returns `true`.
+fn with_manifest<F>(project_dir: &Path, json: bool, mutate: F) -> Result<bool, String>
+where
+    F: FnOnce(&mut ProjectManifest) -> bool,
+{
     let toml_path = project_dir.join("relava.toml");
     if !toml_path.exists() {
         if !json {
             eprintln!("[warn] relava.toml not found — skipping --save");
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let mut manifest = ProjectManifest::from_file(&toml_path)
         .map_err(|e| format!("failed to read relava.toml: {e}"))?;
 
-    let section = manifest_section(&mut manifest, resource_type);
-    if section.remove(name).is_none() {
-        // Entry wasn't in the manifest — nothing to do
-        return Ok(());
+    if !mutate(&mut manifest) {
+        return Ok(false);
     }
 
     write_manifest(&toml_path, &manifest)?;
-
-    if !json {
-        println!("  [save]    Removed {name} from relava.toml [{resource_type}s]");
-    }
-
-    Ok(())
+    Ok(true)
 }
 
 /// Get a mutable reference to the appropriate section in the manifest.
@@ -170,6 +185,25 @@ mod tests {
         assert_eq!(manifest.agents["debugger"], "0.5.0");
         assert_eq!(manifest.commands["deploy"], "1.0.0");
         assert_eq!(manifest.rules["no-console-log"], "1.0.0");
+    }
+
+    #[test]
+    fn add_same_version_skips_write() {
+        let root = temp_dir();
+        fs::write(
+            root.path().join("relava.toml"),
+            "[skills]\ndenden = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Get the file's content before
+        let before = fs::read_to_string(root.path().join("relava.toml")).unwrap();
+
+        add_to_manifest(root.path(), ResourceType::Skill, "denden", "1.0.0", false).unwrap();
+
+        // File should be unchanged (no unnecessary rewrite)
+        let after = fs::read_to_string(root.path().join("relava.toml")).unwrap();
+        assert_eq!(before, after);
     }
 
     #[test]

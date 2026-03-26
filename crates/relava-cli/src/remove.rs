@@ -19,6 +19,8 @@ pub struct RemoveResult {
     pub resource_type: String,
     pub name: String,
     pub removed_path: String,
+    /// Whether a resource was actually removed from disk.
+    pub was_removed: bool,
 }
 
 /// Run `relava remove <type> <name>`.
@@ -31,38 +33,35 @@ pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
     // Validate the resource name
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
 
-    // Check if installed
+    // Check if installed — warn but don't error
     if !install::is_installed(opts.project_dir, opts.resource_type, opts.name) {
-        let msg = format!("{} '{}' is not installed", opts.resource_type, opts.name);
-        if opts.json {
-            return Err(msg);
+        if !opts.json {
+            eprintln!(
+                "[warn] {} '{}' is not installed",
+                opts.resource_type, opts.name
+            );
         }
-        eprintln!("[warn] {msg}");
         return Ok(RemoveResult {
             resource_type: opts.resource_type.to_string(),
             name: opts.name.to_string(),
             removed_path: String::new(),
+            was_removed: false,
         });
     }
 
-    let agent_type = AgentType::Claude;
-    let target_path = resource_path(opts.project_dir, agent_type, opts.resource_type, opts.name);
+    let target_path = resource_path(opts.project_dir, opts.resource_type, opts.name);
 
     if opts.verbose {
         eprintln!("removing {}", target_path.display());
     }
 
-    // Delete the resource
+    let remove_err = |e| format!("failed to remove {}: {e}", target_path.display());
     match opts.resource_type {
         ResourceType::Skill => {
-            // Skills are directories — remove recursively
-            std::fs::remove_dir_all(&target_path)
-                .map_err(|e| format!("failed to remove {}: {e}", target_path.display()))?;
+            std::fs::remove_dir_all(&target_path).map_err(remove_err)?;
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
-            // Single .md files
-            std::fs::remove_file(&target_path)
-                .map_err(|e| format!("failed to remove {}: {e}", target_path.display()))?;
+            std::fs::remove_file(&target_path).map_err(remove_err)?;
         }
     }
 
@@ -83,16 +82,13 @@ pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
         resource_type: opts.resource_type.to_string(),
         name: opts.name.to_string(),
         removed_path: removed_display,
+        was_removed: true,
     })
 }
 
 /// Compute the filesystem path for an installed resource.
-fn resource_path(
-    project_dir: &Path,
-    agent_type: AgentType,
-    resource_type: ResourceType,
-    name: &str,
-) -> PathBuf {
+fn resource_path(project_dir: &Path, resource_type: ResourceType, name: &str) -> PathBuf {
+    let agent_type = AgentType::Claude;
     match resource_type {
         ResourceType::Skill => project_dir.join(agent_type.skills_dir()).join(name),
         ResourceType::Agent => project_dir
@@ -112,13 +108,16 @@ fn resource_path(
 fn cleanup_empty_parents(removed_path: &Path, stop_at: &Path) {
     let mut current = removed_path.parent();
     while let Some(dir) = current {
-        // Never remove the project root or anything above it
         if dir == stop_at || !dir.starts_with(stop_at) {
             break;
         }
-        // Try to remove — will fail if not empty, which is fine
-        if std::fs::remove_dir(dir).is_err() {
-            break;
+        match std::fs::remove_dir(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+            Err(e) => {
+                eprintln!("[warn] could not clean up {}: {e}", dir.display());
+                break;
+            }
         }
         current = dir.parent();
     }
@@ -153,6 +152,7 @@ mod tests {
         let result = run(&opts).unwrap();
         assert_eq!(result.resource_type, "skill");
         assert_eq!(result.name, "denden");
+        assert!(result.was_removed);
         assert!(!skill_dir.exists());
     }
 
@@ -230,6 +230,7 @@ mod tests {
 
         // Should succeed with warning, not error
         let result = run(&opts).unwrap();
+        assert!(!result.was_removed);
         assert_eq!(result.removed_path, "");
     }
 
@@ -275,6 +276,23 @@ mod tests {
         // agents/ dir should still exist (has other.md)
         assert!(agents_dir.exists());
         assert!(agents_dir.join("other.md").exists());
+    }
+
+    #[test]
+    fn remove_not_installed_json_mode_also_ok() {
+        let root = temp_dir();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Skill,
+            name: "nonexistent",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+
+        // JSON mode should also return Ok (consistent with non-JSON)
+        let result = run(&opts).unwrap();
+        assert!(!result.was_removed);
     }
 
     #[test]

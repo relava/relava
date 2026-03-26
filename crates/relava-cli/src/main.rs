@@ -133,6 +133,7 @@ fn main() {
             match remove::run(&opts) {
                 Ok(result) => {
                     if save
+                        && result.was_removed
                         && let Err(e) =
                             save::remove_from_manifest(&project_dir, rt, &name, cli.json)
                     {
