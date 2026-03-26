@@ -150,7 +150,7 @@ impl ResourceMeta {
 /// [rules]
 /// no-console-log = "1.0.0"
 /// ```
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectManifest {
     /// Target agent platform — determines install paths.

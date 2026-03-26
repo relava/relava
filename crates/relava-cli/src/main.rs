@@ -10,6 +10,7 @@ mod remove;
 mod resolver;
 mod save;
 mod tools;
+mod update;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
@@ -206,14 +207,29 @@ fn main() {
             name,
             all,
         } => {
-            if all {
-                println!("relava update --all");
-            } else {
-                println!(
-                    "relava update {} {}",
-                    resource_type.unwrap_or_default(),
-                    name.unwrap_or_default()
-                );
+            let rt = resource_type.as_ref().map(|s| {
+                install::parse_resource_type(s).unwrap_or_else(|e| exit_with_error(&e, cli.json))
+            });
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = update::UpdateOpts {
+                server_url: &cli.server,
+                resource_type: rt,
+                name: name.as_deref(),
+                all,
+                project_dir: &project_dir,
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match update::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
             }
         }
         Command::Publish {

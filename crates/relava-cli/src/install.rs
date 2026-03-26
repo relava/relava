@@ -565,6 +565,22 @@ fn write_to_project(
     })
 }
 
+/// Public wrapper around `write_to_project` for use by other modules (e.g. update).
+///
+/// Copies cached resource files into the project's Claude Code directory,
+/// overwriting any existing files.
+pub fn write_to_project_public(
+    project_root: &Path,
+    resource_type: ResourceType,
+    name: &str,
+    version: &Version,
+    cache: &DownloadCache,
+) -> Result<Vec<String>, String> {
+    let WriteResult { overwritten, .. } =
+        write_to_project(project_root, resource_type, name, version, cache)?;
+    Ok(overwritten)
+}
+
 /// Parse a resource type string from CLI input.
 pub fn parse_resource_type(s: &str) -> Result<ResourceType, String> {
     ResourceType::from_str(s).map_err(|e| e.to_string())
