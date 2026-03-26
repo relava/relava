@@ -3,6 +3,7 @@ use std::path::Path;
 use relava_types::manifest::ProjectManifest;
 use relava_types::validate::ResourceType;
 
+use crate::disable;
 use crate::install;
 
 /// A single entry in the list output.
@@ -90,28 +91,27 @@ fn scan_type(
         }
     };
 
+    // Scan active resources
     match resource_type {
         ResourceType::Skill => {
-            // Skills are subdirectories containing SKILL.md
             for entry in read_dir.flatten() {
                 if !entry.path().is_dir() {
                     continue;
                 }
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !install::is_installed(project_dir, ResourceType::Skill, &name) {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+
+                // Skip the .disabled/ subdirectory itself
+                if dir_name == ".disabled" {
                     continue;
                 }
-                let version = manifest_version(manifest, resource_type, &name);
-                entries.push(ListEntry {
-                    name,
-                    resource_type: resource_type.to_string(),
-                    version,
-                    status: "active".to_string(),
-                });
+
+                if !install::is_installed(project_dir, ResourceType::Skill, &dir_name) {
+                    continue;
+                }
+                entries.push(make_entry(dir_name, resource_type, manifest, "active"));
             }
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
-            // Single .md files
             for entry in read_dir.flatten() {
                 let path = entry.path();
                 if !path.is_file() {
@@ -122,19 +122,77 @@ fn scan_type(
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                let version = manifest_version(manifest, resource_type, &name);
-                entries.push(ListEntry {
-                    name,
-                    resource_type: resource_type.to_string(),
-                    version,
-                    status: "active".to_string(),
-                });
+                entries.push(make_entry(name, resource_type, manifest, "active"));
             }
+        }
+    }
+
+    // Scan disabled resources from .disabled/ subdirectory
+    let disabled_dir = disable::disabled_dir_for(project_dir, resource_type);
+    if disabled_dir.is_dir() {
+        match std::fs::read_dir(&disabled_dir) {
+            Ok(disabled_entries) => {
+                scan_disabled_entries(disabled_entries, resource_type, manifest, &mut entries);
+            }
+            Err(e) => eprintln!("[warn] cannot read {}: {e}", disabled_dir.display()),
         }
     }
 
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
+}
+
+/// Scan a `.disabled/` subdirectory for disabled resources.
+fn scan_disabled_entries(
+    read_dir: std::fs::ReadDir,
+    resource_type: ResourceType,
+    manifest: &Option<ProjectManifest>,
+    entries: &mut Vec<ListEntry>,
+) {
+    for entry_result in read_dir {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[warn] error reading disabled entry: {e}");
+                continue;
+            }
+        };
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let name = match resource_type {
+            ResourceType::Skill => {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                file_name
+            }
+            ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
+                if !entry.path().is_file() {
+                    continue;
+                }
+                match file_name.strip_suffix(".md") {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                }
+            }
+        };
+        entries.push(make_entry(name, resource_type, manifest, "disabled"));
+    }
+}
+
+/// Build a `ListEntry` with its manifest version resolved.
+fn make_entry(
+    name: String,
+    resource_type: ResourceType,
+    manifest: &Option<ProjectManifest>,
+    status: &str,
+) -> ListEntry {
+    let version = manifest_version(manifest, resource_type, &name);
+    ListEntry {
+        name,
+        resource_type: resource_type.to_string(),
+        version,
+        status: status.to_string(),
+    }
 }
 
 /// Look up the version for a resource in relava.toml, if it exists.
@@ -438,5 +496,139 @@ mod tests {
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 3);
+    }
+
+    #[test]
+    fn list_disabled_skill() {
+        let root = temp_dir();
+
+        // Active skill
+        let active = root.path().join(".claude/skills/active-skill");
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("SKILL.md"), "# Active").unwrap();
+
+        // Disabled skill (in .disabled/ subdirectory)
+        let disabled = root.path().join(".claude/skills/.disabled/disabled-skill");
+        fs::create_dir_all(&disabled).unwrap();
+        fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
+
+        let opts = ListOpts {
+            resource_type: Some(ResourceType::Skill),
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resources.len(), 2);
+
+        let active_entry = result
+            .resources
+            .iter()
+            .find(|e| e.name == "active-skill")
+            .unwrap();
+        assert_eq!(active_entry.status, "active");
+
+        let disabled_entry = result
+            .resources
+            .iter()
+            .find(|e| e.name == "disabled-skill")
+            .unwrap();
+        assert_eq!(disabled_entry.status, "disabled");
+    }
+
+    #[test]
+    fn list_disabled_agent() {
+        let root = temp_dir();
+        let agents_dir = root.path().join(".claude/agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Active
+        fs::write(agents_dir.join("active-agent.md"), "# Active").unwrap();
+        // Disabled (in .disabled/ subdirectory)
+        let disabled_dir = agents_dir.join(".disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("disabled-agent.md"), "# Disabled").unwrap();
+
+        let opts = ListOpts {
+            resource_type: Some(ResourceType::Agent),
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resources.len(), 2);
+
+        let active_entry = result
+            .resources
+            .iter()
+            .find(|e| e.name == "active-agent")
+            .unwrap();
+        assert_eq!(active_entry.status, "active");
+
+        let disabled_entry = result
+            .resources
+            .iter()
+            .find(|e| e.name == "disabled-agent")
+            .unwrap();
+        assert_eq!(disabled_entry.status, "disabled");
+    }
+
+    #[test]
+    fn list_disabled_with_manifest_version() {
+        let root = temp_dir();
+
+        // Disabled skill (in .disabled/ subdirectory)
+        let disabled = root.path().join(".claude/skills/.disabled/denden");
+        fs::create_dir_all(&disabled).unwrap();
+        fs::write(disabled.join("SKILL.md"), "# Denden").unwrap();
+
+        // Manifest with version
+        fs::write(
+            root.path().join("relava.toml"),
+            "[skills]\ndenden = \"1.2.0\"\n",
+        )
+        .unwrap();
+
+        let opts = ListOpts {
+            resource_type: Some(ResourceType::Skill),
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resources.len(), 1);
+        assert_eq!(result.resources[0].name, "denden");
+        assert_eq!(result.resources[0].status, "disabled");
+        assert_eq!(result.resources[0].version, "1.2.0");
+    }
+
+    #[test]
+    fn list_disabled_sorted_with_active() {
+        let root = temp_dir();
+        let agents_dir = root.path().join(".claude/agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        fs::write(agents_dir.join("zebra.md"), "# Zebra").unwrap();
+        fs::write(agents_dir.join("middle.md"), "# Middle").unwrap();
+
+        // Disabled agent in .disabled/ subdirectory
+        let disabled_dir = agents_dir.join(".disabled");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("alpha.md"), "# Alpha disabled").unwrap();
+
+        let opts = ListOpts {
+            resource_type: Some(ResourceType::Agent),
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resources.len(), 3);
+        assert_eq!(result.resources[0].name, "alpha");
+        assert_eq!(result.resources[0].status, "disabled");
+        assert_eq!(result.resources[1].name, "middle");
+        assert_eq!(result.resources[1].status, "active");
+        assert_eq!(result.resources[2].name, "zebra");
+        assert_eq!(result.resources[2].status, "active");
     }
 }
