@@ -19,5 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+mockito = "1"
 sha2.workspace = true
 tempfile = "3"
