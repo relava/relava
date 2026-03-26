@@ -2,6 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
+use relava_types::file_filter;
 use relava_types::validate::{self, ResourceType};
 
 // ---------------------------------------------------------------------------
@@ -11,8 +12,6 @@ use relava_types::validate::{self, ResourceType};
 const MAX_FILE_COUNT: usize = 100;
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_TOTAL_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
-const BINARY_PROBE_SIZE: usize = 8_000;
-
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -304,7 +303,6 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
     // 4b. File sizes
     let mut total_size: u64 = 0;
     let mut oversized: Vec<String> = Vec::new();
-    let mut binary_files: Vec<String> = Vec::new();
     let mut size_errors: Vec<String> = Vec::new();
 
     for file_path in &files {
@@ -326,14 +324,13 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
                 format_size(size)
             ));
         }
-
-        // 5. Binary detection (for text-only resource types)
-        if requires_text_only(resource_type)
-            && let Ok(true) = is_binary(file_path)
-        {
-            binary_files.push(relative_display(file_path, path));
-        }
     }
+
+    // 5. Binary detection (for text-only resource types)
+    let binary_scan = file_filter::scan_for_binary_files(
+        resource_type,
+        files.iter().map(|f| (f.clone(), relative_display(f, path))),
+    );
 
     // Report per-file size violations
     if oversized.is_empty() && size_errors.is_empty() {
@@ -360,8 +357,8 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
     }
 
     // 5. File type filtering
-    if requires_text_only(resource_type) {
-        if binary_files.is_empty() {
+    if file_filter::requires_text_only(resource_type) {
+        if binary_scan.is_clean() {
             checks.pass("file_types", "All files are text");
         } else {
             let type_label = match resource_type {
@@ -370,7 +367,7 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
                 ResourceType::Rule => "rules",
                 ResourceType::Agent => unreachable!(),
             };
-            for f in &binary_files {
+            for f in &binary_scan.binary_files {
                 checks.fail(
                     "file_types",
                     format!("Contains binary file: {f} ({type_label} must be text-only)"),
@@ -536,24 +533,6 @@ fn collect_dir_paths(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String>
         }
     }
     Ok(())
-}
-
-/// Whether a resource type requires text-only files.
-fn requires_text_only(resource_type: ResourceType) -> bool {
-    matches!(
-        resource_type,
-        ResourceType::Skill | ResourceType::Command | ResourceType::Rule
-    )
-}
-
-/// Check if a file is binary by scanning the first 8,000 bytes for null bytes.
-fn is_binary(path: &Path) -> Result<bool, std::io::Error> {
-    use std::io::Read;
-
-    let mut file = std::fs::File::open(path)?;
-    let mut buffer = vec![0u8; BINARY_PROBE_SIZE];
-    let bytes_read = file.read(&mut buffer)?;
-    Ok(buffer[..bytes_read].contains(&0))
 }
 
 /// Format a byte count as a human-readable string.
@@ -1185,22 +1164,6 @@ mod tests {
     fn format_size_mb() {
         assert_eq!(format_size(1_048_576), "1.0 MB");
         assert_eq!(format_size(52_428_800), "50.0 MB");
-    }
-
-    #[test]
-    fn is_binary_detects_null_bytes() {
-        let root = temp_dir();
-        let binary = root.path().join("binary.bin");
-        fs::write(&binary, [0u8, 1, 2, 3]).unwrap();
-        assert!(is_binary(&binary).unwrap());
-    }
-
-    #[test]
-    fn is_binary_text_file() {
-        let root = temp_dir();
-        let text = root.path().join("text.txt");
-        fs::write(&text, "Hello, world!").unwrap();
-        assert!(!is_binary(&text).unwrap());
     }
 
     #[test]
