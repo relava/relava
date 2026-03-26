@@ -60,9 +60,7 @@ pub fn run(opts: &BulkInstallOpts) -> Result<BulkInstallResult, String> {
     let lockfile: Option<Lockfile> = match Lockfile::load(opts.project_dir) {
         Ok(lf) => lf,
         Err(e) => {
-            if !opts.json {
-                eprintln!("[warn] {e} — resolving fresh versions from registry");
-            }
+            eprintln!("[warn] {e} — resolving fresh versions from registry");
             None
         }
     };
