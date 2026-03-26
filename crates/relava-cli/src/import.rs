@@ -49,29 +49,26 @@ pub fn run(opts: &ImportOpts) -> Result<ImportResult, String> {
         .map_err(|e| e.to_string())?;
 
     // 5. Determine version
+    let default_version = Version {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    };
     let version = match opts.version {
         Some(v) => validate::validate_version(v).map_err(|e| e.to_string())?,
-        None => {
-            let from_frontmatter =
-                extract_frontmatter_field(&path, opts.resource_type, &name, "version")
-                    .and_then(|v| Version::parse(&v).ok());
-            match from_frontmatter {
-                Some(v) => v,
-                None => {
-                    let default = Version {
-                        major: 1,
-                        minor: 0,
-                        patch: 0,
-                    };
-                    if !opts.json {
-                        eprintln!(
-                            "warning: no version found in frontmatter, defaulting to {default}"
-                        );
-                    }
-                    default
+        None => match extract_frontmatter_field(&path, opts.resource_type, &name, "version") {
+            Some(v) => Version::parse(&v).map_err(|_| {
+                format!("frontmatter version '{v}' is invalid (expected MAJOR.MINOR.PATCH)")
+            })?,
+            None => {
+                if !opts.json {
+                    eprintln!(
+                        "warning: no version found in frontmatter, defaulting to {default_version}"
+                    );
                 }
+                default_version
             }
-        }
+        },
     };
 
     if opts.verbose {
@@ -86,10 +83,6 @@ pub fn run(opts: &ImportOpts) -> Result<ImportResult, String> {
 
     // 6. Collect files as base64-encoded entries
     let files = collect_files(&path, opts.resource_type)?;
-    if files.is_empty() {
-        return Err("resource contains no files".to_string());
-    }
-
     let file_paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
 
     // 7. Extract description from frontmatter
@@ -555,6 +548,36 @@ mod tests {
         let result = run(&opts);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid version"));
+    }
+
+    #[test]
+    fn rejects_malformed_frontmatter_version() {
+        let dir = tempdir();
+        let skill_dir = dir.join("bad-fm-ver");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: bad-fm-ver\nversion: banana\n---\n# Skill",
+        )
+        .unwrap();
+
+        let opts = ImportOpts {
+            server_url: "http://localhost:7420",
+            resource_type: ResourceType::Skill,
+            path: &skill_dir,
+            version: None,
+            json: false,
+            verbose: false,
+        };
+
+        let result = run(&opts);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("banana"),
+            "error should mention the bad version"
+        );
+        assert!(err.contains("invalid"), "error should say it's invalid");
     }
 
     // -- extract_frontmatter_yaml --
