@@ -259,14 +259,30 @@ fn update_resource(
     install::write_to_project_public(opts.project_dir, resource_type, name, &latest, cache)
         .map_err(|e| e.to_string())?;
 
-    // Update relava.toml with new version
-    crate::save::add_to_manifest(
+    // Update relava.toml with new version.
+    // Preserve wildcard "*" constraints — writing the resolved version would
+    // convert them into exact pins, breaking future updates.
+    let is_wildcard = version_pin.as_deref() == Some("*");
+    let manifest_value = if is_wildcard {
+        "*".to_string()
+    } else {
+        latest.to_string()
+    };
+    if let Err(e) = crate::save::add_to_manifest(
         opts.project_dir,
         resource_type,
         name,
-        &latest.to_string(),
+        &manifest_value,
         opts.json,
-    )?;
+    ) {
+        // Files are already written — warn instead of failing the update.
+        if !opts.json {
+            eprintln!(
+                "[warn] {}/{}: files updated but failed to update relava.toml: {e}",
+                resource_type, name
+            );
+        }
+    }
 
     Ok(UpdateEntry {
         resource_type: resource_type.to_string(),
@@ -362,6 +378,20 @@ mod tests {
 
     fn temp_dir() -> TempDir {
         TempDir::new().expect("failed to create temp dir")
+    }
+
+    /// Default test options. Override individual fields with struct update syntax:
+    /// `UpdateOpts { all: true, ..test_opts(root.path()) }`
+    fn test_opts(project_dir: &Path) -> UpdateOpts<'_> {
+        UpdateOpts {
+            server_url: "http://localhost:7420",
+            resource_type: None,
+            name: None,
+            all: false,
+            project_dir,
+            json: false,
+            verbose: false,
+        }
     }
 
     // --- UpdateResult classification ---
@@ -501,15 +531,7 @@ mod tests {
     #[test]
     fn single_missing_type_returns_error() {
         let root = temp_dir();
-        let opts = UpdateOpts {
-            server_url: "http://localhost:7420",
-            resource_type: None,
-            name: None,
-            all: false,
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
-        };
+        let opts = test_opts(root.path());
         let result = run(&opts);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing resource type"));
@@ -519,13 +541,8 @@ mod tests {
     fn single_missing_name_returns_error() {
         let root = temp_dir();
         let opts = UpdateOpts {
-            server_url: "http://localhost:7420",
             resource_type: Some(ResourceType::Skill),
-            name: None,
-            all: false,
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
+            ..test_opts(root.path())
         };
         let result = run(&opts);
         assert!(result.is_err());
@@ -536,13 +553,9 @@ mod tests {
     fn single_invalid_slug_returns_error() {
         let root = temp_dir();
         let opts = UpdateOpts {
-            server_url: "http://localhost:7420",
             resource_type: Some(ResourceType::Skill),
             name: Some("INVALID_SLUG"),
-            all: false,
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
+            ..test_opts(root.path())
         };
         let result = run(&opts);
         assert!(result.is_err());
@@ -552,13 +565,9 @@ mod tests {
     fn single_not_installed_returns_error() {
         let root = temp_dir();
         let opts = UpdateOpts {
-            server_url: "http://localhost:7420",
             resource_type: Some(ResourceType::Skill),
             name: Some("nonexistent"),
-            all: false,
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
+            ..test_opts(root.path())
         };
         let result = run(&opts);
         assert!(result.is_err());
@@ -571,13 +580,8 @@ mod tests {
     fn all_without_manifest_returns_error() {
         let root = temp_dir();
         let opts = UpdateOpts {
-            server_url: "http://localhost:7420",
-            resource_type: None,
-            name: None,
             all: true,
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
+            ..test_opts(root.path())
         };
         let result = run(&opts);
         assert!(result.is_err());
