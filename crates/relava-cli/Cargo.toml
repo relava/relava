@@ -17,7 +17,7 @@ relava-types = { path = "../relava-types" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
+sha2.workspace = true
 tempfile = "3"
