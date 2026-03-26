@@ -51,13 +51,27 @@ pub fn run(opts: &ImportOpts) -> Result<ImportResult, String> {
     // 5. Determine version
     let version = match opts.version {
         Some(v) => validate::validate_version(v).map_err(|e| e.to_string())?,
-        None => extract_frontmatter_field(&path, opts.resource_type, &name, "version")
-            .and_then(|v| Version::parse(&v).ok())
-            .unwrap_or(Version {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            }),
+        None => {
+            let from_frontmatter =
+                extract_frontmatter_field(&path, opts.resource_type, &name, "version")
+                    .and_then(|v| Version::parse(&v).ok());
+            match from_frontmatter {
+                Some(v) => v,
+                None => {
+                    let default = Version {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    };
+                    if !opts.json {
+                        eprintln!(
+                            "warning: no version found in frontmatter, defaulting to {default}"
+                        );
+                    }
+                    default
+                }
+            }
+        }
     };
 
     if opts.verbose {
