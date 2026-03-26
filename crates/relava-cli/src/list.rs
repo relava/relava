@@ -14,7 +14,7 @@ pub struct ListEntry {
     pub status: String,
 }
 
-/// Result of the list command, used for JSON output.
+/// Result of the list command.
 #[derive(Debug, serde::Serialize)]
 pub struct ListResult {
     pub resources: Vec<ListEntry>,
@@ -82,49 +82,56 @@ fn scan_type(
 
     let mut entries = Vec::new();
 
+    let read_dir = match std::fs::read_dir(&type_dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            eprintln!(
+                "[warn] cannot read {}: {e}",
+                type_dir.display()
+            );
+            return entries;
+        }
+    };
+
     match resource_type {
         ResourceType::Skill => {
             // Skills are subdirectories containing SKILL.md
-            if let Ok(read_dir) = std::fs::read_dir(&type_dir) {
-                for entry in read_dir.flatten() {
-                    if !entry.path().is_dir() {
-                        continue;
-                    }
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !install::is_installed(project_dir, ResourceType::Skill, &name) {
-                        continue;
-                    }
-                    let version = manifest_version(manifest, resource_type, &name);
-                    entries.push(ListEntry {
-                        name,
-                        resource_type: resource_type.to_string(),
-                        version,
-                        status: "active".to_string(),
-                    });
+            for entry in read_dir.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
                 }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !install::is_installed(project_dir, ResourceType::Skill, &name) {
+                    continue;
+                }
+                let version = manifest_version(manifest, resource_type, &name);
+                entries.push(ListEntry {
+                    name,
+                    resource_type: resource_type.to_string(),
+                    version,
+                    status: "active".to_string(),
+                });
             }
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
             // Single .md files
-            if let Ok(read_dir) = std::fs::read_dir(&type_dir) {
-                for entry in read_dir.flatten() {
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-                    let name = match file_name.strip_suffix(".md") {
-                        Some(n) => n.to_string(),
-                        None => continue,
-                    };
-                    let version = manifest_version(manifest, resource_type, &name);
-                    entries.push(ListEntry {
-                        name,
-                        resource_type: resource_type.to_string(),
-                        version,
-                        status: "active".to_string(),
-                    });
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
                 }
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                let name = match file_name.strip_suffix(".md") {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                let version = manifest_version(manifest, resource_type, &name);
+                entries.push(ListEntry {
+                    name,
+                    resource_type: resource_type.to_string(),
+                    version,
+                    status: "active".to_string(),
+                });
             }
         }
     }
@@ -151,10 +158,20 @@ fn manifest_version(
     section.get(name).cloned().unwrap_or_default()
 }
 
-/// Load the project manifest, returning None if it doesn't exist or can't be parsed.
+/// Load the project manifest, returning None if it doesn't exist.
+///
+/// Warns on parse errors to distinguish from a missing file.
 fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
     let path = project_dir.join("relava.toml");
-    ProjectManifest::from_file(&path).ok()
+    match ProjectManifest::from_file(&path) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            if path.exists() {
+                eprintln!("[warn] failed to read relava.toml: {e}");
+            }
+            None
+        }
+    }
 }
 
 /// Print a formatted table of list entries.

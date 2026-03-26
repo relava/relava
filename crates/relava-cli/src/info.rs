@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use relava_types::manifest::{ProjectManifest, ResourceMeta};
-use relava_types::validate::ResourceType;
+use relava_types::validate::{self, ResourceType};
 
 use crate::install;
 
@@ -14,7 +14,7 @@ pub struct InfoOpts<'a> {
     pub verbose: bool,
 }
 
-/// Result of the info command, used for JSON output.
+/// Result of the info command.
 #[derive(Debug, serde::Serialize)]
 pub struct InfoResult {
     pub name: String,
@@ -33,6 +33,9 @@ pub struct InfoResult {
 /// name, version, type, description, dependencies, file count, total
 /// size, and install location.
 pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
+    // Validate slug before filesystem operations
+    validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
+
     if !install::is_installed(opts.project_dir, opts.resource_type, opts.name) {
         return Err(format!(
             "{} '{}' is not installed",
@@ -76,7 +79,10 @@ fn compute_size(resource_type: ResourceType, path: &Path) -> (usize, u64) {
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
             match std::fs::metadata(path) {
                 Ok(meta) => (1, meta.len()),
-                Err(_) => (0, 0),
+                Err(e) => {
+                    eprintln!("[warn] cannot read {}: {e}", path.display());
+                    (0, 0)
+                }
             }
         }
     }
@@ -89,7 +95,10 @@ fn dir_size(path: &Path) -> (usize, u64) {
 
     let entries = match std::fs::read_dir(path) {
         Ok(e) => e,
-        Err(_) => return (0, 0),
+        Err(e) => {
+            eprintln!("[warn] cannot read {}: {e}", path.display());
+            return (0, 0);
+        }
     };
 
     for entry in entries.flatten() {
@@ -110,6 +119,8 @@ fn dir_size(path: &Path) -> (usize, u64) {
 }
 
 /// Look up version from relava.toml.
+///
+/// Returns empty string if relava.toml does not exist. Warns on parse errors.
 fn load_manifest_version(
     project_dir: &Path,
     resource_type: ResourceType,
@@ -118,7 +129,14 @@ fn load_manifest_version(
     let path = project_dir.join("relava.toml");
     let manifest = match ProjectManifest::from_file(&path) {
         Ok(m) => m,
-        Err(_) => return String::new(),
+        Err(e) => {
+            // Silently ignore missing file; warn on parse errors
+            if !path.exists() {
+                return String::new();
+            }
+            eprintln!("[warn] failed to read relava.toml: {e}");
+            return String::new();
+        }
     };
     let section = match resource_type {
         ResourceType::Skill => &manifest.skills,
@@ -129,7 +147,7 @@ fn load_manifest_version(
     section.get(name).cloned().unwrap_or_default()
 }
 
-/// Extract description and dependencies from resource metadata.
+/// Extract description and resource dependencies (skills + agents) from metadata.
 fn load_metadata(resource_type: ResourceType, path: &Path) -> (String, Vec<String>) {
     let md_path = match resource_type {
         ResourceType::Skill => path.join("SKILL.md"),
@@ -169,7 +187,7 @@ fn extract_description(content: &str) -> String {
     String::new()
 }
 
-/// Remove YAML frontmatter delimiters from content.
+/// Strip YAML frontmatter (including delimiters) from markdown content, returning the body.
 fn strip_frontmatter(content: &str) -> &str {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
@@ -480,5 +498,27 @@ mod tests {
     #[test]
     fn format_size_megabytes() {
         assert_eq!(format_size(1_500_000), "1.4 MB");
+    }
+
+    #[test]
+    fn info_invalid_slug_errors() {
+        let root = temp_dir();
+
+        let opts = InfoOpts {
+            resource_type: ResourceType::Skill,
+            name: "../../../etc",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        assert!(run(&opts).is_err());
+    }
+
+    #[test]
+    fn strip_frontmatter_unclosed() {
+        // Unclosed frontmatter should return original content
+        let content = "---\nname: test\n# No closing delimiter\nSome body text.";
+        assert_eq!(strip_frontmatter(content), content);
     }
 }

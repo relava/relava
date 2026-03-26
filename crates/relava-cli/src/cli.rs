@@ -73,10 +73,6 @@ pub enum Command {
     List {
         /// Resource type (skill, agent, command, rule); omit to list all
         resource_type: Option<String>,
-
-        /// List globally installed resources
-        #[arg(long)]
-        global: bool,
     },
 
     /// Show resource details

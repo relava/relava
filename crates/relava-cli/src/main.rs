@@ -149,7 +149,7 @@ fn main() {
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
-        Command::List { resource_type, .. } => {
+        Command::List { resource_type } => {
             let rt = match resource_type {
                 Some(ref s) => Some(
                     install::parse_resource_type(s)
