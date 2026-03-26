@@ -3,6 +3,7 @@ use std::path::Path;
 use relava_types::manifest::ProjectManifest;
 use relava_types::validate::ResourceType;
 
+use crate::disable;
 use crate::install;
 
 /// A single entry in the list output.
@@ -107,13 +108,7 @@ fn scan_type(
                 if !install::is_installed(project_dir, ResourceType::Skill, &dir_name) {
                     continue;
                 }
-                let version = manifest_version(manifest, resource_type, &dir_name);
-                entries.push(ListEntry {
-                    name: dir_name,
-                    resource_type: resource_type.to_string(),
-                    version,
-                    status: "active".to_string(),
-                });
+                entries.push(make_entry(dir_name, resource_type, manifest, "active"));
             }
         }
         ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
@@ -127,23 +122,20 @@ fn scan_type(
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                let version = manifest_version(manifest, resource_type, &name);
-                entries.push(ListEntry {
-                    name,
-                    resource_type: resource_type.to_string(),
-                    version,
-                    status: "active".to_string(),
-                });
+                entries.push(make_entry(name, resource_type, manifest, "active"));
             }
         }
     }
 
     // Scan disabled resources from .disabled/ subdirectory
-    let disabled_dir = type_dir.join(".disabled");
-    if disabled_dir.is_dir()
-        && let Ok(disabled_entries) = std::fs::read_dir(&disabled_dir)
-    {
-        scan_disabled_entries(disabled_entries, resource_type, manifest, &mut entries);
+    let disabled_dir = disable::disabled_dir_for(project_dir, resource_type);
+    if disabled_dir.is_dir() {
+        match std::fs::read_dir(&disabled_dir) {
+            Ok(disabled_entries) => {
+                scan_disabled_entries(disabled_entries, resource_type, manifest, &mut entries);
+            }
+            Err(e) => eprintln!("[warn] cannot read {}: {e}", disabled_dir.display()),
+        }
     }
 
     entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -157,7 +149,14 @@ fn scan_disabled_entries(
     manifest: &Option<ProjectManifest>,
     entries: &mut Vec<ListEntry>,
 ) {
-    for entry in read_dir.flatten() {
+    for entry_result in read_dir {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[warn] error reading disabled entry: {e}");
+                continue;
+            }
+        };
         let file_name = entry.file_name().to_string_lossy().to_string();
         let name = match resource_type {
             ResourceType::Skill => {
@@ -176,13 +175,23 @@ fn scan_disabled_entries(
                 }
             }
         };
-        let version = manifest_version(manifest, resource_type, &name);
-        entries.push(ListEntry {
-            name,
-            resource_type: resource_type.to_string(),
-            version,
-            status: "disabled".to_string(),
-        });
+        entries.push(make_entry(name, resource_type, manifest, "disabled"));
+    }
+}
+
+/// Build a `ListEntry` with its manifest version resolved.
+fn make_entry(
+    name: String,
+    resource_type: ResourceType,
+    manifest: &Option<ProjectManifest>,
+    status: &str,
+) -> ListEntry {
+    let version = manifest_version(manifest, resource_type, &name);
+    ListEntry {
+        name,
+        resource_type: resource_type.to_string(),
+        version,
+        status: status.to_string(),
     }
 }
 
