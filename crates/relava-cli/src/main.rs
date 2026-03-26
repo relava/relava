@@ -17,6 +17,9 @@ mod save;
 mod tools;
 mod update;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
 
