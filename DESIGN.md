@@ -658,12 +658,25 @@ Created relava.toml
 What it does:
 - Creates an empty `relava.toml` in project root
 
-#### `relava install <resource-type> <resource-name> [--version <ver>] [--save] [--global]`
+#### `relava install <resource-type> <resource-name> [options]`
 
 Install a resource into the current project.
 
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--version <ver>` | Install a specific version (default: latest) |
+| `--save` | Write resource and version to `relava.toml` |
+| `--global` | Install to `~/.claude/` instead of project |
+| `--update` | Update to latest version if already installed |
+| `--recursive` | With `--update`, also update transitive dependencies |
+| `--force` | Replace existing installation even if same version |
+| `--skip-tools` | Skip system tool installation prompts |
+| `-y, --yes` | Auto-confirm all prompts (tool installs, etc.) |
+
 ```bash
-# Install a skill (downloads to project only)
+# Install a skill
 $ relava install skill denden
 Installing skill denden@1.2.0...
   [skill]   .claude/skills/denden/SKILL.md + 3 files
@@ -671,45 +684,38 @@ Installed skill denden@1.2.0
 
 # Install and save to relava.toml
 $ relava install skill notify-slack --save
-Installing skill notify-slack@0.3.0...
-  [skill]   .claude/skills/notify-slack/SKILL.md
-Installed skill notify-slack@0.3.0
-Saved to relava.toml
 
 # Install a specific version
 $ relava install skill notify-slack --version 0.2.0 --save
-Installing skill notify-slack@0.2.0...
-  [skill]   .claude/skills/notify-slack/SKILL.md
-Installed skill notify-slack@0.2.0
-Saved to relava.toml
+
+# Update to latest, including dependencies
+$ relava install skill denden --update --recursive
+
+# Force reinstall, skip tool prompts
+$ relava install skill denden --force --skip-tools
+
+# Auto-confirm everything
+$ relava install skill code-review --save -y
 
 # Install an agent
 $ relava install agent debugger --save
-Installing agent debugger@0.5.0...
-  [agent]   .claude/agents/debugger.md
-Installed agent debugger@0.5.0
-Saved to relava.toml
 
 # Install a command
 $ relava install command commit --save
-Installing command commit@0.2.0...
-  [command] .claude/commands/commit.md
-Installed command commit@0.2.0
-Saved to relava.toml
 
 # Install a rule
 $ relava install rule no-console-log
-Installing rule no-console-log@1.0.0...
-  [rule]    .claude/rules/no-console-log.md
-Installed rule no-console-log@1.0.0
 ```
 
 What it does:
-1. Resolves resource and version from the local registry server
+1. Resolves resource and version from the registry server
 2. Resolves transitive dependencies from `metadata.relava` frontmatter
 3. Downloads resource files from the registry server
 4. Writes files to the correct Claude Code locations in the project
-5. If `--save` is used, writes the resource and version to `relava.toml`
+5. Runs tool installation checks (unless `--skip-tools`)
+6. Checks required env vars and warns if missing
+7. Updates `relava.lock` with installed versions and dependency graph
+8. If `--save` is used, writes the resource and version to `relava.toml`
 
 #### `relava install relava.toml`
 
@@ -846,6 +852,7 @@ Both client-side (CLI) and server-side validation are enforced:
 | File size (max 10 MB each) | Yes | Yes |
 | Total size (max 50 MB) | Yes | Yes |
 | Semver format | Yes | Yes |
+| File type filtering (text-only for skills/commands/rules) | Yes | Yes |
 | Version monotonicity (must be > latest published) | No | Yes |
 | Dependency existence (all deps must exist in registry) | No | Yes |
 | SHA-256 per file | Yes | Yes |
@@ -889,6 +896,54 @@ $ relava import skill ./.claude/skills/denden
 Detected: 1 skill (denden)
 Published skill denden@0.1.0 to local registry.
 ```
+
+#### `relava validate <resource-type> <path>`
+
+Validate a resource offline before publishing. Runs all client-side checks without uploading.
+
+```bash
+$ relava validate skill ./.claude/skills/code-review
+Validating skill code-review...
+  [ok]   Slug format valid
+  [ok]   SKILL.md present
+  [ok]   Frontmatter parseable
+  [ok]   File count: 3 (max 100)
+  [ok]   Total size: 24 KB (max 50 MB)
+  [ok]   All files are text
+  [ok]   Dependencies exist: security-baseline, style-guide
+Validation passed.
+
+$ relava validate skill ./bad-skill
+Validating skill bad-skill...
+  [ok]   Slug format valid
+  [fail] SKILL.md missing
+  [fail] Contains binary file: bin/tool (skills must be text-only)
+Validation failed: 2 errors.
+```
+
+What it checks:
+1. Slug format (1-64 chars, lowercase alphanumeric + hyphens)
+2. Directory structure (SKILL.md for skills, `<name>.md` for agents/commands/rules)
+3. Frontmatter is valid YAML with parseable `metadata.relava`
+4. File limits (max 100 files, 10 MB each, 50 MB total)
+5. File type filtering (see File Type Filtering below)
+6. Semver format if version is present in frontmatter
+7. Dependencies exist in the registry (requires server connection)
+
+### File Type Filtering
+
+Different resource types have different file type rules:
+
+| Resource Type | Allowed Files | Rationale |
+|---------------|--------------|-----------|
+| **Skills** | Text only (`.md`, `.txt`, `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.csv`, `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.go`, `.rs`, `.html`, `.css`) | Skills are prompt-layer — injected into context. Binary files waste tokens. |
+| **Agents** | Any files | Agents may include compiled binaries or data files. |
+| **Commands** | Text only | Commands are markdown instructions. |
+| **Rules** | Text only | Rules are markdown instructions. |
+
+Binary detection uses the same heuristic as git: check the first 8,000 bytes for null bytes. If null bytes are found, the file is binary.
+
+Enforced on both `relava validate` and `relava publish`.
 
 ---
 
@@ -985,6 +1040,50 @@ The `--save` flag controls whether `relava.toml` is modified:
 - **With `--save`**: Same as above, plus writes the resource name and version to `relava.toml`.
 
 This mirrors `npm install --save` behavior. The `relava.toml` file is the declarative manifest that can be committed to version control, allowing collaborators to run `relava install relava.toml` to reproduce the same resource set.
+
+### Lockfile: `relava.lock`
+
+Separate from the editable `relava.toml`, the lockfile tracks the exact state of what's installed for reproducibility. It is auto-generated by the CLI and should be committed to version control.
+
+```json
+{
+  "version": 1,
+  "directInstalls": [
+    { "type": "skill", "name": "denden", "version": "1.2.0" },
+    { "type": "agent", "name": "debugger", "version": "0.5.0" }
+  ],
+  "packages": {
+    "skill:denden:1.2.0": {
+      "type": "skill",
+      "name": "denden",
+      "version": "1.2.0",
+      "dependents": []
+    },
+    "skill:notify-slack:0.3.0": {
+      "type": "skill",
+      "name": "notify-slack",
+      "version": "0.3.0",
+      "dependents": ["skill:denden:1.2.0"]
+    },
+    "agent:debugger:0.5.0": {
+      "type": "agent",
+      "name": "debugger",
+      "version": "0.5.0",
+      "dependents": []
+    }
+  }
+}
+```
+
+**`directInstalls`** — resources the user explicitly installed (top-level requests).
+
+**`packages`** — all installed resources including transitive dependencies. Each entry tracks its `dependents` (which resources caused it to be installed).
+
+**Behavior:**
+- `relava install` writes/updates `relava.lock` after every install or remove
+- `relava install relava.toml` reads `relava.lock` if present and installs exact versions from it (like `npm ci`). If absent, resolves fresh and creates the lockfile.
+- `relava update` resolves fresh versions, updates both `relava.toml` (if `--save`) and `relava.lock`
+- `relava remove` removes the entry and any orphaned transitive dependencies (packages with no remaining dependents)
 
 ---
 
@@ -1205,8 +1304,37 @@ When publishing a new or modified resource to the registry and the name already 
 | HTTP server | **Axum** | Async, performant, well-maintained. Pairs with tokio. |
 | Database | **SQLite via rusqlite** | Zero-config, file-based, perfect for local-first. FTS5 for search. |
 | TOML parsing | **toml** crate | Native format, first-class Rust support. |
+| YAML parsing | **serde_yaml** | For `.md` frontmatter parsing. |
 | HTTP client | **reqwest** | For CLI-to-server communication. |
+| Console output | **comfy-table** | Rich tables for list/search/info output. |
+| Colors | **colored** | Colored status tags (`[ok]`, `[fail]`, `[warn]`). |
 | Logging | **tracing** | Structured logging, compatible with Axum. |
+
+### Console Output
+
+The CLI uses rich formatted output for readability:
+
+**Tables** (`comfy-table`) for list, search, and info commands:
+```
+Name              Version  Type    Description
+notify-slack      0.3.0    skill   Send messages to Slack via Web API
+notify-discord    0.2.1    skill   Send messages to Discord via webhooks
+```
+
+**Status tags** (`colored`) for install, validate, and doctor:
+```
+  [ok]     Server running on :7420
+  [skill]  .claude/skills/denden/SKILL.md + 3 files
+  [tool]   gh — installed
+  [warn]   Missing required env: GITHUB_TOKEN
+  [fail]   SKILL.md missing
+```
+
+**JSON mode** (`--json`) outputs structured JSON for scripting:
+```bash
+$ relava list skills --json
+[{"name":"denden","version":"1.2.0","type":"skill"},{"name":"notify-slack","version":"0.3.0","type":"skill"}]
+```
 
 ### GUI: React + Vite
 
