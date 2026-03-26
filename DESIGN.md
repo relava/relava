@@ -1405,29 +1405,29 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 
 #### Week 2 — Local Store & Core Commands
 
-- ⬜ 6. Local store directory structure — create and manage `~/.relava/store/<type>/<name>/<version>/`
-- ⬜ 7. SQLite database setup — schema creation (resources, versions tables), migrations
-- ⬜ 8. `relava init` — create empty project `relava.toml`
-- ⬜ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations. Flags: `--version`, `--save`, `--global`, `--update`, `--recursive`, `--force`, `--skip-tools`, `-y/--yes` — *depends on 6, 7, 3a*
-- ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
-- ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `.claude/skills/<name>/`, handle multi-file directories
-- ⬜ 10a. Tool installation — parse `metadata.relava.tools`, check PATH via `which`, detect OS, prompt user, execute install commands — *depends on 2*
-- ⬜ 10b. Env var checking — parse `metadata.relava.env`, check required vars against environment and `.claude/settings.json`, warn if missing — *depends on 2*
-- ⬜ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
-- ⬜ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
-- ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
-- ⬜ 12c. Dependency-aware install — install transitive dependencies in resolved order before the target resource, skip already-installed versions — *depends on 9, 12b*
-- ⬜ 13. Lockfile management — write/update `relava.lock` after install/remove with directInstalls and packages (including dependents tracking) — *depends on 9, 12c*
-- ⬜ 14. `relava remove <type> <name>` — delete resource files, remove from lockfile, clean up orphaned transitive deps
-- ⬜ 15. `--save` flag — write resource name + version to project `relava.toml` on install, remove entry on remove — *depends on 3*
+- ✅ 6. Local store directory structure — create and manage `~/.relava/store/<type>/<name>/<version>/`
+- ✅ 7. SQLite database setup — schema creation (resources, versions tables), migrations
+- ✅ 8. `relava init` — create empty project `relava.toml`
+- ✅ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations. Flags: `--version`, `--save`, `--global`, `--update`, `--recursive`, `--force`, `--skip-tools`, `-y/--yes` — *depends on 6, 7, 3a*
+- ✅ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
+- ✅ 10. Skill installation logic — write `SKILL.md` + support files to `.claude/skills/<name>/`, handle multi-file directories
+- ✅ 10a. Tool installation — parse `metadata.relava.tools`, check PATH via `which`, detect OS, prompt user, execute install commands — *depends on 2*
+- ✅ 10b. Env var checking — parse `metadata.relava.env`, check required vars against environment and `.claude/settings.json`, warn if missing — *depends on 2*
+- ✅ 11. Agent/command/rule installation logic — write `.md` file to `.claude/agents/`, `.claude/commands/`, or `.claude/rules/`
+- ✅ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
+- ✅ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
+- ✅ 12c. Dependency-aware install — install transitive dependencies in resolved order before the target resource, skip already-installed versions — *depends on 9, 12b*
+- ✅ 13. Lockfile management — write/update `relava.lock` after install/remove with directInstalls and packages (including dependents tracking) — *depends on 9, 12c*
+- ✅ 14. `relava remove <type> <name>` — delete resource files, remove from lockfile, clean up orphaned transitive deps
+- ✅ 15. `--save` flag — write resource name + version to project `relava.toml` on install, remove entry on remove — *depends on 3*
 
 #### Week 3 — Remaining CLI Commands
 
-- ⬜ 16. `relava list <type>` — list installed resources for current project with version and status (active/disabled)
-- ⬜ 17. `relava info <type> <name>` — display full resource details (dependencies, size)
-- ⬜ 18. `relava update <type> <name>` — download new version from registry, overwrite project files — *depends on 9*
-- ⬜ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
-- ⬜ 20. `relava doctor` — check server reachability, validate project relava.toml against installed files
+- ✅ 16. `relava list <type>` — list installed resources for current project with version and status (active/disabled)
+- ✅ 17. `relava info <type> <name>` — display full resource details (dependencies, size)
+- ✅ 18. `relava update <type> <name>` — download new version from registry, overwrite project files — *depends on 9*
+- ✅ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
+- ✅ 20. `relava doctor` — check server reachability, validate project relava.toml against installed files
 - ⬜ 21. `relava install relava.toml` — read project manifest, use `relava.lock` for exact versions if present, otherwise resolve fresh and create lockfile — *depends on 3, 9, 13*
 - ⬜ 22. `relava import <type> <path>` — scan existing resource directory/file, validate structure, publish to registry
 - ⬜ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), does not install — *depends on 12b*
@@ -1463,6 +1463,8 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 35b. Download endpoint — `GET /resources/:type/:name/versions/:version/download` serves resource files for CLI install — *depends on 27*
 - ⬜ 35c. Version auto-increment — on publish without explicit version, auto-increment patch from latest published version — *depends on 35a*
 - ⬜ 36. `relava publish <type> <name> --path PATH` — publish from custom source directory — *depends on 35*
+- ⬜ 36a. `.relavaignore` support — exclude file patterns from publish/sync, works like `.gitignore`, combined with install record filtering — *depends on 35*
+- ⬜ 36b. Publish change detection — compare local resource directory against registry version using SHA-256 checksums, skip publish if no changes, show diff summary and prompt for confirmation — *depends on 35*
 - ⬜ 37. Static file serving — server serves files from GUI directory for future web app — *depends on 25*
 
 **Phase 2 Milestone**: CLI works against the running server. All operations available via REST API. Resources are published and installed through the server.
@@ -1500,6 +1502,7 @@ No week assignments — each feature is an independent work item.
 - ⬜ 53. Hook removal — remove specific hook entries from `settings.json`
 - ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `.md` files and frontmatter
 - ⬜ 56. Auto-update notifications — check for newer versions on server, surface in CLI and GUI
+- ⬜ 58. Self-update check and upgrade — `relava self-update`, check for newer CLI/server versions, download and replace binary
 - ⬜ 59. Cache management and cleanup — `relava cache clean`, automatic eviction policy, disk usage reporting
 
 ---
