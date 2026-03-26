@@ -126,6 +126,23 @@ Project Filesystem (.claude/)
 
 The CLI always talks to the server via REST API. Switching from local (`localhost:7420`) to an enterprise registry is just a URL change.
 
+### Crate Structure
+
+The project is organized as a Cargo workspace with four crates:
+
+| Crate | Purpose | License |
+|-------|---------|---------|
+| `relava-types` | Shared types, validation, versioning, and manifest parsing | Apache-2.0 |
+| `relava-cli` | CLI binary -- registry client, caching, dependency resolution, environment checks | Apache-2.0 |
+| `relava-server` | Registry server -- REST API, storage (SQLite, blob store), web GUI | ELv2 |
+| `relava-server-ext` | Cloud and enterprise extensions (future) | ELv2 |
+
+```
+relava-cli        → relava-types
+relava-server     → relava-types
+relava-server-ext → relava-server, relava-types
+```
+
 ## Enterprise Extensibility
 
 The MVP is local-first, but the architecture is designed for enterprise:
@@ -141,7 +158,9 @@ The MVP is local-first, but the architecture is designed for enterprise:
 
 | Component | Technology |
 |-----------|------------|
-| CLI + Server | Rust, clap, Axum, SQLite |
+| Workspace | Rust (4-crate Cargo workspace) |
+| CLI | Rust, clap |
+| Server | Rust, Axum, SQLite |
 | GUI | React, Vite, Tailwind CSS, TanStack Query |
 
 ## Status
@@ -150,4 +169,7 @@ Relava is in active development. Week 1 (scaffolding, parsers, validation) is co
 
 ## License
 
-[Elastic License 2.0 (ELv2)](LICENSE) -- free for personal and commercial use. Cannot be offered as a managed service.
+Relava uses split licensing:
+
+- **`relava-types` and `relava-cli`** -- [Apache License 2.0](crates/relava-types/LICENSE). Open source, free to use and modify.
+- **`relava-server` and `relava-server-ext`** -- [Elastic License 2.0 (ELv2)](crates/relava-server/LICENSE). Free for personal and commercial use. Cannot be offered as a managed service.
