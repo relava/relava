@@ -81,6 +81,33 @@ Relava solves this by providing:
 3. **GUI** is a web application served by the server for browsing and searching the registry.
 4. **Project Filesystem** is managed entirely by the CLI — the server never touches it.
 
+### Crate Structure
+
+The codebase is a Cargo workspace with four crates, split by concern and license:
+
+```
+relava-types        (Apache-2.0)   Shared types, validation, versioning, manifest parsing
+    ^                              Zero IO dependencies — pure logic only
+    |
+    +--- relava-cli     (Apache-2.0)   CLI binary, registry client, caching,
+    |                                  dependency resolution, env checks, tool checks
+    |
+    +--- relava-server  (ELv2)         Registry server, REST API, storage layer,
+             ^                         SQLite DB, blob store, web GUI
+             |
+         relava-server-ext (ELv2)      Cloud and enterprise extensions (future)
+                                       (depends on both relava-server and relava-types)
+```
+
+| Crate | Contains | License |
+|-------|----------|---------|
+| `relava-types` | `manifest`, `validate`, `version` modules | Apache-2.0 |
+| `relava-cli` | `registry`, `cache`, `env_check`, `tools`, `install`, `init` | Apache-2.0 |
+| `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, GUI serving | ELv2 |
+| `relava-server-ext` | Stub — future cloud/enterprise extensions | ELv2 |
+
+The split licensing keeps shared types and the CLI open source (Apache-2.0) while protecting the server against competing managed services (ELv2).
+
 ### REST-First Architecture
 
 All CLI operations go through the server's REST API — there is no direct mode. If the server is not running, the CLI prints an error: `Server not reachable. Run 'relava server start' first.`
@@ -420,7 +447,7 @@ Not implemented in MVP (server binds to `127.0.0.1`, no auth), but the design mu
 
 The MVP uses SQLite + local filesystem. For enterprise, the storage layer must be swappable without changing business logic or the API.
 
-**Storage abstraction traits (Rust):**
+**Storage abstraction traits (defined in `relava-server`):**
 
 ```rust
 // Implemented in MVP with SQLite, swappable to PostgreSQL/CockroachDB
@@ -466,7 +493,7 @@ trait SearchBackend {
 - Database access must go through the `ResourceStore` trait, not raw SQL in handlers
 - File I/O must go through the `BlobStore` trait, not direct `fs::read`/`fs::write` in handlers
 - Search must go through the `SearchBackend` trait
-- These traits are defined in MVP and have SQLite/filesystem implementations — swapping is adding a new impl, not refactoring existing code
+- These traits live in the `relava-server` crate and have SQLite/filesystem implementations — swapping is adding a new impl, not refactoring existing code
 
 ### Future: Registry Federation
 
