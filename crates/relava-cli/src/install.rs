@@ -96,7 +96,7 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
 
     // Resolve transitive dependencies
     let dep_results = resolve_and_install_deps(
-        opts, &client, &cache, &install_root, &version,
+        opts, &client, &cache, &install_root,
     )?;
 
     if !opts.json {
@@ -209,7 +209,6 @@ fn resolve_and_install_deps(
     client: &RegistryClient,
     cache: &DownloadCache,
     install_root: &Path,
-    _root_version: &Version,
 ) -> Result<Vec<DepInstallResult>, String> {
     // Build version pins from relava.toml if it exists
     let version_pins = load_version_pins(opts.project_dir, opts.resource_type);

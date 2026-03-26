@@ -10,6 +10,27 @@ mod tools;
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
 
+/// Print a serializable value as pretty JSON. Exits on serialization failure.
+fn print_json(value: &impl serde::Serialize) {
+    match serde_json::to_string_pretty(value) {
+        Ok(json) => println!("{json}"),
+        Err(e) => {
+            eprintln!("failed to serialize output: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Print an error, formatting as JSON if `json` is true. Always exits with code 1.
+fn exit_with_error(msg: &str, json: bool) -> ! {
+    if json {
+        print_json(&serde_json::json!({ "error": msg }));
+    } else {
+        eprintln!("{msg}");
+    }
+    std::process::exit(1);
+}
+
 /// Resolve the project directory from `--project` flag or current working directory.
 fn resolve_project_dir(project_flag: Option<&str>) -> std::path::PathBuf {
     match project_flag {
@@ -52,13 +73,8 @@ fn main() {
                 std::process::exit(1);
             };
 
-            let rt = match install::parse_resource_type(&resource_type) {
-                Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
 
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
@@ -77,27 +93,10 @@ fn main() {
             match install::run(&opts) {
                 Ok(result) => {
                     if cli.json {
-                        match serde_json::to_string_pretty(&result) {
-                            Ok(json) => println!("{json}"),
-                            Err(e) => {
-                                eprintln!("failed to serialize result: {e}");
-                                std::process::exit(1);
-                            }
-                        }
+                        print_json(&result);
                     }
                 }
-                Err(e) => {
-                    if cli.json {
-                        let err_json = serde_json::json!({ "error": e });
-                        match serde_json::to_string_pretty(&err_json) {
-                            Ok(json) => println!("{json}"),
-                            Err(se) => eprintln!("failed to serialize error: {se}: {e}"),
-                        }
-                    } else {
-                        eprintln!("{e}");
-                    }
-                    std::process::exit(1);
-                }
+                Err(e) => exit_with_error(&e, cli.json),
             }
         }
         Command::Remove {
@@ -144,14 +143,11 @@ fn main() {
         Command::Resolve {
             resource_type,
             name,
-            version,
+            version: _, // TODO: use version pin when version-constrained resolution is implemented
         } => {
             let rt = match install::parse_resource_type(&resource_type) {
                 Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
+                Err(e) => exit_with_error(&e, cli.json),
             };
 
             let project_dir = resolve_project_dir(cli.project.as_deref());
@@ -171,40 +167,15 @@ fn main() {
                 &client, &cache, &project_dir, version_pins,
             );
 
-            // If a specific version was requested, resolve it first
-            // and use it as a pin for the root resource
-            if let Some(ref v) = version {
-                if cli.verbose {
-                    eprintln!("resolving {resource_type} {name}@{v}...");
-                }
-            }
-
             match resolver::resolve(&provider, rt, &name) {
                 Ok(result) => {
                     if cli.json {
-                        match serde_json::to_string_pretty(&result.to_json_output()) {
-                            Ok(json) => println!("{json}"),
-                            Err(e) => {
-                                eprintln!("failed to serialize result: {e}");
-                                std::process::exit(1);
-                            }
-                        }
+                        print_json(&result.to_json_output());
                     } else {
                         print!("{}", result.tree.display());
                     }
                 }
-                Err(e) => {
-                    if cli.json {
-                        let err_json = serde_json::json!({ "error": e.to_string() });
-                        match serde_json::to_string_pretty(&err_json) {
-                            Ok(json) => println!("{json}"),
-                            Err(se) => eprintln!("failed to serialize error: {se}: {e}"),
-                        }
-                    } else {
-                        eprintln!("{e}");
-                    }
-                    std::process::exit(1);
-                }
+                Err(e) => exit_with_error(&e.to_string(), cli.json),
             }
         }
         Command::Server { action } => match action {

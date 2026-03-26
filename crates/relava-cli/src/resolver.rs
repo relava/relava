@@ -1,12 +1,13 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 
 use relava_types::manifest::ResourceMeta;
-use relava_types::validate::{AgentType, ResourceType};
+use relava_types::validate::ResourceType;
 use relava_types::version::Version;
 
 use crate::cache::DownloadCache;
+use crate::install;
 use crate::registry::RegistryClient;
 
 /// Maximum dependency tree depth to prevent runaway recursion.
@@ -184,7 +185,7 @@ pub fn resolve<P: DepProvider>(
     resource_type: ResourceType,
     name: &str,
 ) -> Result<ResolveResult, ResolveError> {
-    let mut visited: HashSet<(ResourceType, String)> = HashSet::new();
+    let mut resolved: HashMap<(ResourceType, String), Version> = HashMap::new();
     let mut path: Vec<(ResourceType, String)> = Vec::new();
     let mut install_order: Vec<ResolvedDep> = Vec::new();
 
@@ -193,7 +194,7 @@ pub fn resolve<P: DepProvider>(
         resource_type,
         name,
         0,
-        &mut visited,
+        &mut resolved,
         &mut path,
         &mut install_order,
     )?;
@@ -209,7 +210,7 @@ fn dfs<P: DepProvider>(
     resource_type: ResourceType,
     name: &str,
     depth: usize,
-    visited: &mut HashSet<(ResourceType, String)>,
+    resolved: &mut HashMap<(ResourceType, String), Version>,
     path: &mut Vec<(ResourceType, String)>,
     install_order: &mut Vec<ResolvedDep>,
 ) -> Result<DepTreeNode, ResolveError> {
@@ -234,12 +235,11 @@ fn dfs<P: DepProvider>(
     }
 
     // Already fully resolved — return a leaf node (deduplication)
-    if visited.contains(&key) {
-        let version = provider.resolve_version(resource_type, name)?;
+    if let Some(cached_version) = resolved.get(&key) {
         return Ok(DepTreeNode {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            version: version.to_string(),
+            version: cached_version.to_string(),
             dependencies: Vec::new(),
         });
     }
@@ -253,29 +253,21 @@ fn dfs<P: DepProvider>(
     // Fetch metadata to discover sub-dependencies
     let meta = provider.fetch_deps(resource_type, name, &version)?;
 
-    // Recurse into skill dependencies
-    let mut children = Vec::new();
-    for dep_name in &meta.skills {
-        let child = dfs(
-            provider,
-            ResourceType::Skill,
-            dep_name,
-            depth + 1,
-            visited,
-            path,
-            install_order,
-        )?;
-        children.push(child);
-    }
+    // Recurse into all dependencies (skills first, then agents)
+    let dep_entries = meta
+        .skills
+        .iter()
+        .map(|n| (ResourceType::Skill, n.as_str()))
+        .chain(meta.agents.iter().map(|n| (ResourceType::Agent, n.as_str())));
 
-    // Recurse into agent dependencies
-    for dep_name in &meta.agents {
+    let mut children = Vec::new();
+    for (dep_type, dep_name) in dep_entries {
         let child = dfs(
             provider,
-            ResourceType::Agent,
+            dep_type,
             dep_name,
             depth + 1,
-            visited,
+            resolved,
             path,
             install_order,
         )?;
@@ -284,7 +276,7 @@ fn dfs<P: DepProvider>(
 
     // Done resolving this node
     path.pop();
-    visited.insert(key);
+    resolved.insert(key, version.clone());
 
     // Check if already installed at the resolved version
     let already_installed = provider.is_installed(resource_type, name, &version);
@@ -400,27 +392,7 @@ impl<'a> DepProvider for RegistryDepProvider<'a> {
     }
 
     fn is_installed(&self, resource_type: ResourceType, name: &str, _version: &Version) -> bool {
-        let agent_type = AgentType::Claude;
-        let path = match resource_type {
-            ResourceType::Skill => self
-                .install_root
-                .join(agent_type.skills_dir())
-                .join(name)
-                .join("SKILL.md"),
-            ResourceType::Agent => self
-                .install_root
-                .join(agent_type.agents_dir())
-                .join(format!("{name}.md")),
-            ResourceType::Command => self
-                .install_root
-                .join(agent_type.commands_dir())
-                .join(format!("{name}.md")),
-            ResourceType::Rule => self
-                .install_root
-                .join(agent_type.rules_dir())
-                .join(format!("{name}.md")),
-        };
-        path.exists()
+        install::is_installed(self.install_root, resource_type, name)
     }
 }
 
@@ -431,7 +403,7 @@ impl<'a> DepProvider for RegistryDepProvider<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     // -- Mock provider --
 
