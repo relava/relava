@@ -1,11 +1,10 @@
 use std::path::{Component, Path, PathBuf};
 
 use base64::Engine;
-use sha2::{Digest, Sha256};
 
 use crate::registry::DownloadResponse;
-use crate::validate::ResourceType;
-use crate::version::Version;
+use relava_types::validate::ResourceType;
+use relava_types::version::Version;
 
 /// Manages a download cache at `~/.relava/cache/`.
 ///
@@ -158,7 +157,9 @@ fn collect_relative_paths(dir: &Path, base: &Path) -> Result<Vec<String>, CacheE
 }
 
 /// Compute SHA-256 hex digest of data.
-pub fn sha256_hex(data: &[u8]) -> String {
+#[cfg(test)]
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())

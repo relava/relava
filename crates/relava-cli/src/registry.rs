@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::validate::ResourceType;
-use crate::version::{Version, VersionConstraint, VersionError};
+use relava_types::validate::ResourceType;
+use relava_types::version::{Version, VersionConstraint, VersionError};
 
 /// Errors from registry operations.
 #[derive(Debug)]
@@ -67,6 +67,7 @@ pub struct DownloadFile {
 
 /// Response from GET /resources/:type/:name/versions/:version/download
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // fields deserialized but not read yet
 pub struct DownloadResponse {
     pub resource_type: String,
     pub name: String,
@@ -104,6 +105,7 @@ impl RegistryClient {
     ///
     /// Unlike other methods, any send failure (not just connection errors)
     /// is treated as "server unreachable" — this is intentional for health checks.
+    #[allow(dead_code)] // will be used by `relava doctor`
     pub fn health_check(&self) -> Result<(), RegistryError> {
         let url = format!("{}/api/v1/health", self.base_url);
         self.client

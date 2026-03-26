@@ -1,4 +1,4 @@
-// TODO: remove these allows once the store module is wired into the CLI
+// TODO: remove these allows once the store module is wired into routes
 #![allow(dead_code)]
 #![allow(unused_imports)]
 

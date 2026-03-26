@@ -1,6 +1,10 @@
+mod cache;
 mod cli;
+mod env_check;
 mod init;
 mod install;
+mod registry;
+mod tools;
 
 use clap::Parser;
 use cli::{Cli, Command, ServerAction};
