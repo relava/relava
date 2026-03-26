@@ -32,9 +32,13 @@ pub enum Command {
     Init,
 
     /// Install a resource into the current project
+    ///
+    /// With no arguments, installs all resources declared in relava.toml.
+    /// With `relava.toml` as the argument, same as no arguments.
+    /// With `<type> <name>`, installs a single resource.
     Install {
-        /// Resource type (skill, agent, command, rule) or path to relava.toml
-        resource_type: String,
+        /// Resource type (skill, agent, command, rule) or "relava.toml" for bulk install
+        resource_type: Option<String>,
 
         /// Resource name
         name: Option<String>,
