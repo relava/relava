@@ -77,14 +77,16 @@ impl Tag {
     }
 }
 
-/// Map a resource type string to its corresponding tag.
-pub fn resource_tag(resource_type: &str) -> Tag {
+/// Map a resource type to its corresponding tag.
+///
+/// Accepts `ResourceType` directly so the compiler enforces exhaustive
+/// matching when new variants are added.
+pub fn resource_tag(resource_type: relava_types::validate::ResourceType) -> Tag {
     match resource_type {
-        "skill" => Tag::Skill,
-        "agent" => Tag::Agent,
-        "command" => Tag::Command,
-        "rule" => Tag::Rule,
-        _ => Tag::Skill,
+        relava_types::validate::ResourceType::Skill => Tag::Skill,
+        relava_types::validate::ResourceType::Agent => Tag::Agent,
+        relava_types::validate::ResourceType::Command => Tag::Command,
+        relava_types::validate::ResourceType::Rule => Tag::Rule,
     }
 }
 
@@ -179,10 +181,11 @@ mod tests {
 
     #[test]
     fn resource_tag_maps_correctly() {
-        assert_eq!(resource_tag("skill"), Tag::Skill);
-        assert_eq!(resource_tag("agent"), Tag::Agent);
-        assert_eq!(resource_tag("command"), Tag::Command);
-        assert_eq!(resource_tag("rule"), Tag::Rule);
+        use relava_types::validate::ResourceType;
+        assert_eq!(resource_tag(ResourceType::Skill), Tag::Skill);
+        assert_eq!(resource_tag(ResourceType::Agent), Tag::Agent);
+        assert_eq!(resource_tag(ResourceType::Command), Tag::Command);
+        assert_eq!(resource_tag(ResourceType::Rule), Tag::Rule);
     }
 
     #[test]

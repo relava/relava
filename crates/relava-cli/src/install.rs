@@ -140,7 +140,7 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
             );
         }
 
-        let tag = crate::output::resource_tag(&opts.resource_type.to_string());
+        let tag = crate::output::resource_tag(opts.resource_type);
         let file_summary = if file_count == 1 {
             install_dir_display.clone()
         } else {
