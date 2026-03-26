@@ -1,8 +1,10 @@
 mod cache;
 mod cli;
 mod env_check;
+mod info;
 mod init;
 mod install;
+mod list;
 mod registry;
 mod remove;
 mod resolver;
@@ -147,14 +149,54 @@ fn main() {
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
-        Command::List { resource_type, .. } => {
-            println!("relava list {resource_type}");
+        Command::List { resource_type } => {
+            let rt = resource_type.as_ref().map(|s| {
+                install::parse_resource_type(s).unwrap_or_else(|e| exit_with_error(&e, cli.json))
+            });
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = list::ListOpts {
+                resource_type: rt,
+                project_dir: &project_dir,
+                json: cli.json,
+                _verbose: cli.verbose,
+            };
+
+            match list::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
         Command::Info {
             resource_type,
             name,
         } => {
-            println!("relava info {resource_type} {name}");
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = info::InfoOpts {
+                resource_type: rt,
+                name: &name,
+                project_dir: &project_dir,
+                json: cli.json,
+                _verbose: cli.verbose,
+            };
+
+            match info::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
         Command::Search { query } => {
             println!("relava search {query}");
