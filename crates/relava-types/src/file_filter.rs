@@ -33,7 +33,7 @@ pub fn requires_text_only(resource_type: ResourceType) -> bool {
 }
 
 /// Result of scanning a directory for binary files.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BinaryScanResult {
     /// Paths of files detected as binary (relative to the scanned directory).
     pub binary_files: Vec<String>,
@@ -58,17 +58,15 @@ pub fn scan_for_binary_files<I>(resource_type: ResourceType, files: I) -> Binary
 where
     I: IntoIterator<Item = (std::path::PathBuf, String)>,
 {
-    let mut binary_files = Vec::new();
-
     if !requires_text_only(resource_type) {
-        return BinaryScanResult { binary_files };
+        return BinaryScanResult::default();
     }
 
-    for (path, display_path) in files {
-        if let Ok(true) = is_binary(&path) {
-            binary_files.push(display_path);
-        }
-    }
+    let binary_files = files
+        .into_iter()
+        .filter(|(path, _)| matches!(is_binary(path), Ok(true)))
+        .map(|(_, display_path)| display_path)
+        .collect();
 
     BinaryScanResult { binary_files }
 }
