@@ -1,5 +1,6 @@
 mod cache;
 mod cli;
+mod doctor;
 mod env_check;
 mod info;
 mod init;
@@ -288,7 +289,22 @@ fn main() {
             }
         },
         Command::Doctor => {
-            println!("relava doctor");
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
+            let opts = doctor::DoctorOpts {
+                server_url: &cli.server,
+                project_dir: &project_dir,
+                json: cli.json,
+                _verbose: cli.verbose,
+            };
+
+            let result = doctor::run(&opts);
+            if cli.json {
+                print_json(&result);
+            }
+            if !result.is_healthy() {
+                std::process::exit(1);
+            }
         }
         Command::Import {
             resource_type,

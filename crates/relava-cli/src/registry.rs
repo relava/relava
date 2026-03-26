@@ -105,7 +105,6 @@ impl RegistryClient {
     ///
     /// Unlike other methods, any send failure (not just connection errors)
     /// is treated as "server unreachable" — this is intentional for health checks.
-    #[allow(dead_code)] // will be used by `relava doctor`
     pub fn health_check(&self) -> Result<(), RegistryError> {
         let url = format!("{}/api/v1/health", self.base_url);
         self.client
