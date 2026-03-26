@@ -229,22 +229,29 @@ fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
     }
 }
 
-/// Print a formatted table of list entries.
+/// Print a formatted table of list entries using comfy-table.
 fn print_table(entries: &[ListEntry]) {
-    // Header
-    println!("{:<24} {:<10} {:<12} STATUS", "NAME", "TYPE", "VERSION");
-    println!("{}", "-".repeat(56));
-    for entry in entries {
-        let version_display = if entry.version.is_empty() {
-            "-"
-        } else {
-            &entry.version
-        };
-        println!(
-            "{:<24} {:<10} {:<12} {}",
-            entry.name, entry.resource_type, version_display, entry.status
-        );
-    }
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| {
+            let version = if e.version.is_empty() {
+                "-".to_string()
+            } else {
+                e.version.clone()
+            };
+            vec![
+                e.name.clone(),
+                e.resource_type.clone(),
+                version,
+                e.status.clone(),
+            ]
+        })
+        .collect();
+
+    println!(
+        "{}",
+        crate::output::table(&["Name", "Type", "Version", "Status"], &rows)
+    );
 }
 
 #[cfg(test)]

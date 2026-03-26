@@ -211,25 +211,26 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Print info in human-readable format.
+/// Print info in human-readable key-value format using comfy-table.
 fn print_info(info: &InfoResult) {
-    println!("Name:           {}", info.name);
-    println!("Type:           {}", info.resource_type);
-    let version_display = if info.version.is_empty() {
-        "-"
+    let version = if info.version.is_empty() {
+        "-".to_string()
     } else {
-        &info.version
+        info.version.clone()
     };
-    println!("Version:        {version_display}");
-    if !info.description.is_empty() {
-        println!("Description:    {}", info.description);
-    }
-    if !info.dependencies.is_empty() {
-        println!("Dependencies:   {}", info.dependencies.join(", "));
-    }
-    println!("Files:          {}", info.file_count);
-    println!("Size:           {}", format_size(info.total_size));
-    println!("Location:       {}", info.install_location);
+
+    let entries: Vec<(&str, String)> = vec![
+        ("Name", info.name.clone()),
+        ("Type", info.resource_type.clone()),
+        ("Version", version),
+        ("Description", info.description.clone()),
+        ("Dependencies", info.dependencies.join(", ")),
+        ("Files", info.file_count.to_string()),
+        ("Size", format_size(info.total_size)),
+        ("Location", info.install_location.clone()),
+    ];
+
+    println!("{}", crate::output::kv_table(&entries));
 }
 
 #[cfg(test)]

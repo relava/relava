@@ -32,11 +32,11 @@ pub enum CheckStatus {
 }
 
 impl CheckStatus {
-    fn label(&self) -> &str {
+    fn tag(&self) -> crate::output::Tag {
         match self {
-            Self::Pass => "ok",
-            Self::Warn => "warn",
-            Self::Fail => "FAIL",
+            Self::Pass => crate::output::Tag::Ok,
+            Self::Warn => crate::output::Tag::Warn,
+            Self::Fail => crate::output::Tag::Fail,
         }
     }
 }
@@ -107,7 +107,7 @@ impl Checks {
 
     fn push(&mut self, result: CheckResult) {
         if !self.json {
-            println!("  [{:<4}]  {}", result.status.label(), result.message);
+            println!("{}", result.status.tag().fmt(&result.message));
         }
         self.inner.push(result);
     }
