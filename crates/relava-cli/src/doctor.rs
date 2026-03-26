@@ -99,7 +99,10 @@ struct Checks {
 
 impl Checks {
     fn new(json: bool) -> Self {
-        Self { inner: Vec::new(), json }
+        Self {
+            inner: Vec::new(),
+            json,
+        }
     }
 
     fn push(&mut self, result: CheckResult) {
@@ -162,9 +165,7 @@ fn installed_names_on_disk(
             ResourceType::Skill if path.is_dir() => {
                 names.push(entry.file_name().to_string_lossy().to_string());
             }
-            ResourceType::Agent | ResourceType::Command | ResourceType::Rule
-                if path.is_file() =>
-            {
+            ResourceType::Agent | ResourceType::Command | ResourceType::Rule if path.is_file() => {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 if let Some(name) = file_name.strip_suffix(".md") {
                     names.push(name.to_string());
@@ -190,7 +191,11 @@ fn check_registry(checks: &mut Checks, opts: &DoctorOpts) {
             format!("Server health check failed at {}: {e}", opts.server_url),
         ),
     };
-    checks.push(CheckResult { name: "registry".into(), status, message });
+    checks.push(CheckResult {
+        name: "registry".into(),
+        status,
+        message,
+    });
 }
 
 /// Validate relava.toml syntax and return the parsed manifest (if valid).
@@ -276,7 +281,11 @@ fn check_installed_files(checks: &mut Checks, opts: &DoctorOpts) {
         )
     };
 
-    checks.push(CheckResult { name: "installed_files".into(), status, message });
+    checks.push(CheckResult {
+        name: "installed_files".into(),
+        status,
+        message,
+    });
 }
 
 /// Cross-reference relava.toml entries against actually installed files.
@@ -284,11 +293,7 @@ fn check_installed_files(checks: &mut Checks, opts: &DoctorOpts) {
 /// Reports:
 /// - **missing**: listed in relava.toml but not installed on disk
 /// - **orphaned**: installed on disk but not listed in relava.toml
-fn check_cross_reference(
-    checks: &mut Checks,
-    opts: &DoctorOpts,
-    manifest: &ProjectManifest,
-) {
+fn check_cross_reference(checks: &mut Checks, opts: &DoctorOpts, manifest: &ProjectManifest) {
     let mut missing_on_disk: Vec<String> = Vec::new();
     let mut orphaned: Vec<String> = Vec::new();
     let mut scan_warnings: Vec<String> = Vec::new();
@@ -318,10 +323,8 @@ fn check_cross_reference(
             Err(e) => {
                 // Directory doesn't exist is normal; other errors are warnings
                 if type_dir.exists() {
-                    scan_warnings.push(format!(
-                        "Cannot read {} directory: {e}",
-                        type_dir.display()
-                    ));
+                    scan_warnings
+                        .push(format!("Cannot read {} directory: {e}", type_dir.display()));
                 }
             }
         }
@@ -338,7 +341,10 @@ fn check_cross_reference(
 
     // Missing on disk
     let (status, message) = if missing_on_disk.is_empty() {
-        (CheckStatus::Pass, "All manifest entries are installed".into())
+        (
+            CheckStatus::Pass,
+            "All manifest entries are installed".into(),
+        )
     } else {
         (
             CheckStatus::Fail,
@@ -349,7 +355,11 @@ fn check_cross_reference(
             ),
         )
     };
-    checks.push(CheckResult { name: "manifest_sync".into(), status, message });
+    checks.push(CheckResult {
+        name: "manifest_sync".into(),
+        status,
+        message,
+    });
 
     // Orphaned
     let (status, message) = if orphaned.is_empty() {
@@ -367,7 +377,11 @@ fn check_cross_reference(
             ),
         )
     };
-    checks.push(CheckResult { name: "orphaned_resources".into(), status, message });
+    checks.push(CheckResult {
+        name: "orphaned_resources".into(),
+        status,
+        message,
+    });
 }
 
 /// Get a read-only reference to the manifest section for a resource type.
@@ -452,11 +466,7 @@ mod tests {
     #[test]
     fn manifest_invalid_fails() {
         let root = temp_dir();
-        fs::write(
-            root.path().join("relava.toml"),
-            "[[[invalid toml syntax",
-        )
-        .unwrap();
+        fs::write(root.path().join("relava.toml"), "[[[invalid toml syntax").unwrap();
 
         let opts = test_opts(root.path());
         let result = run(&opts);
@@ -480,7 +490,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(check.message.contains("1 installed"));
     }
@@ -495,7 +509,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.message.contains("missing SKILL.md"));
     }
@@ -506,7 +524,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(check.message.contains("0 installed"));
     }
@@ -522,7 +544,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(check.message.contains("2 installed"));
     }
@@ -550,7 +576,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let sync_check = result.checks.iter().find(|c| c.name == "manifest_sync").unwrap();
+        let sync_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "manifest_sync")
+            .unwrap();
         assert_eq!(sync_check.status, CheckStatus::Pass);
 
         let orphan_check = result
@@ -575,7 +605,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let sync_check = result.checks.iter().find(|c| c.name == "manifest_sync").unwrap();
+        let sync_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "manifest_sync")
+            .unwrap();
         assert_eq!(sync_check.status, CheckStatus::Fail);
         assert!(sync_check.message.contains("missing-skill"));
     }
@@ -623,7 +657,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let sync_check = result.checks.iter().find(|c| c.name == "manifest_sync").unwrap();
+        let sync_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "manifest_sync")
+            .unwrap();
         assert_eq!(sync_check.status, CheckStatus::Fail);
         assert!(sync_check.message.contains("missing-rule"));
 
@@ -735,10 +773,12 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        assert!(result
-            .checks
-            .iter()
-            .all(|c| c.name != "manifest_sync" && c.name != "orphaned_resources"));
+        assert!(
+            result
+                .checks
+                .iter()
+                .all(|c| c.name != "manifest_sync" && c.name != "orphaned_resources")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -756,7 +796,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Pass);
         // Only the .md file should be counted
         assert!(check.message.contains("1 installed"));
@@ -781,7 +825,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let check = result.checks.iter().find(|c| c.name == "installed_files").unwrap();
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "installed_files")
+            .unwrap();
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.message.contains("1 of 3"));
         assert!(check.message.contains("broken"));
@@ -810,7 +858,11 @@ mod tests {
         let opts = test_opts(root.path());
         let result = run(&opts);
 
-        let sync_check = result.checks.iter().find(|c| c.name == "manifest_sync").unwrap();
+        let sync_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "manifest_sync")
+            .unwrap();
         assert_eq!(sync_check.status, CheckStatus::Pass);
 
         let orphan_check = result
