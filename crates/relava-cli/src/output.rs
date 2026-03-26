@@ -69,10 +69,9 @@ impl Tag {
             Self::Warn => bracketed.yellow(),
             Self::Fail => bracketed.red().bold(),
             Self::Skill | Self::Agent | Self::Command | Self::Rule => bracketed.cyan(),
-            Self::Tool => bracketed.blue(),
+            Self::Tool | Self::Dep => bracketed.blue(),
             Self::Env => bracketed.magenta(),
             Self::Skip => bracketed.dimmed(),
-            Self::Dep => bracketed.blue(),
         };
         format!("  {colored_bracket} {message}")
     }
@@ -93,18 +92,21 @@ pub fn resource_tag(resource_type: &str) -> Tag {
 // Tables (comfy-table)
 // ---------------------------------------------------------------------------
 
+/// Create a borderless table with dynamic content arrangement.
+fn base_table() -> comfy_table::Table {
+    let mut table = comfy_table::Table::new();
+    table
+        .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
+        .load_preset(comfy_table::presets::NOTHING);
+    table
+}
+
 /// Build a styled table with the given headers and rows.
 ///
 /// Returns the rendered table as a string ready for `println!`.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    use comfy_table::{ContentArrangement, Table};
-
-    let mut table = Table::new();
-    table
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .load_preset(comfy_table::presets::NOTHING);
-
-    table.set_header(headers.iter().map(|h| h.to_string()).collect::<Vec<_>>());
+    let mut table = base_table();
+    table.set_header(headers);
 
     for row in rows {
         table.add_row(row);
@@ -117,12 +119,7 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
 ///
 /// Each entry is `(label, value)`. Entries with empty values are skipped.
 pub fn kv_table(entries: &[(&str, String)]) -> String {
-    use comfy_table::{ContentArrangement, Table};
-
-    let mut table = Table::new();
-    table
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .load_preset(comfy_table::presets::NOTHING);
+    let mut table = base_table();
 
     for (label, value) in entries {
         if !value.is_empty() {
