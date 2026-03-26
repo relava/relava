@@ -81,11 +81,14 @@ fn remove_state() -> Result<(), String> {
 
 /// Check whether a process with the given PID is still running.
 ///
+/// On Unix, uses `kill -0` which checks existence without sending a signal.
 /// Note: `kill -0` cannot distinguish "not found" (ESRCH) from "not
 /// permitted" (EPERM). If the server was started by a different user,
 /// this reports it as not running. Acceptable for single-user local usage.
+///
+/// On Windows, uses `tasklist` filtered by PID.
+#[cfg(unix)]
 fn is_process_running(pid: u32) -> bool {
-    // `kill -0 <pid>` checks existence without sending a signal.
     Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stdout(Stdio::null())
@@ -94,10 +97,40 @@ fn is_process_running(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Send SIGTERM to the given PID. Returns true if the signal was sent.
+#[cfg(windows)]
+fn is_process_running(pid: u32) -> bool {
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| {
+            let output = String::from_utf8_lossy(&o.stdout);
+            // tasklist prints "INFO: No tasks are running..." when no match.
+            // A match contains the PID in the output line.
+            o.status.success() && output.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
+}
+
+/// Send a termination signal to the given PID. Returns true if the signal
+/// was sent.
+///
+/// On Unix, sends SIGTERM via `kill`. On Windows, uses `taskkill`.
+#[cfg(unix)]
 fn send_sigterm(pid: u32) -> bool {
     Command::new("kill")
         .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(windows)]
+fn send_sigterm(pid: u32) -> bool {
+    Command::new("taskkill")
+        .args(["/PID", &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
