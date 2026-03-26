@@ -1,3 +1,4 @@
+mod bulk_install;
 mod cache;
 mod cli;
 mod doctor;
@@ -74,46 +75,91 @@ fn main() {
             global,
             yes,
         } => {
-            let Some(name) = name else {
-                eprintln!("missing resource name. Usage: relava install <type> <name>");
-                std::process::exit(1);
-            };
-
-            let rt = install::parse_resource_type(&resource_type)
-                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
-
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
-            let opts = install::InstallOpts {
-                server_url: &cli.server,
-                resource_type: rt,
-                name: &name,
-                version_pin: version.as_deref(),
-                project_dir: &project_dir,
-                global,
-                json: cli.json,
-                verbose: cli.verbose,
-                yes,
-            };
+            // Determine if this is a bulk install (no args or "relava.toml")
+            let is_bulk = matches!(resource_type.as_deref(), None | Some("relava.toml"));
 
-            match install::run(&opts) {
-                Ok(result) => {
-                    if save
-                        && let Err(e) = save::add_to_manifest(
-                            &project_dir,
-                            rt,
-                            &name,
-                            &result.version,
-                            cli.json,
-                        )
-                    {
-                        exit_with_error(&e, cli.json);
-                    }
-                    if cli.json {
-                        print_json(&result);
-                    }
+            if is_bulk {
+                // Guard against flags that don't apply to bulk install
+                if name.is_some() {
+                    exit_with_error(
+                        "unexpected argument. Usage: relava install (or relava install relava.toml)",
+                        cli.json,
+                    );
                 }
-                Err(e) => exit_with_error(&e, cli.json),
+                if save {
+                    eprintln!(
+                        "warning: --save is ignored during bulk install (resources are already in relava.toml)"
+                    );
+                }
+                if version.is_some() {
+                    eprintln!(
+                        "warning: --version is ignored during bulk install (versions come from relava.toml)"
+                    );
+                }
+
+                let opts = bulk_install::BulkInstallOpts {
+                    server_url: &cli.server,
+                    project_dir: &project_dir,
+                    global,
+                    json: cli.json,
+                    verbose: cli.verbose,
+                    yes,
+                };
+
+                match bulk_install::run(&opts) {
+                    Ok(result) => {
+                        if cli.json {
+                            print_json(&result);
+                        }
+                        if !result.failed.is_empty() {
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => exit_with_error(&e, cli.json),
+                }
+            } else {
+                let resource_type_str = resource_type.unwrap(); // safe: is_bulk is false
+                let Some(name) = name else {
+                    eprintln!("missing resource name. Usage: relava install <type> <name>");
+                    std::process::exit(1);
+                };
+
+                let rt = install::parse_resource_type(&resource_type_str)
+                    .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+                let opts = install::InstallOpts {
+                    server_url: &cli.server,
+                    resource_type: rt,
+                    name: &name,
+                    version_pin: version.as_deref(),
+                    project_dir: &project_dir,
+                    global,
+                    json: cli.json,
+                    verbose: cli.verbose,
+                    yes,
+                };
+
+                match install::run(&opts) {
+                    Ok(result) => {
+                        if save
+                            && let Err(e) = save::add_to_manifest(
+                                &project_dir,
+                                rt,
+                                &name,
+                                &result.version,
+                                cli.json,
+                            )
+                        {
+                            exit_with_error(&e, cli.json);
+                        }
+                        if cli.json {
+                            print_json(&result);
+                        }
+                    }
+                    Err(e) => exit_with_error(&e, cli.json),
+                }
             }
         }
         Command::Remove {
