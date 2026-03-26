@@ -147,8 +147,12 @@ pub enum Command {
         /// Resource type
         resource_type: String,
 
-        /// Path to resource directory
+        /// Path to resource directory or file
         path: String,
+
+        /// Version to publish (default: from frontmatter or 1.0.0)
+        #[arg(long)]
+        version: Option<String>,
     },
 }
 
