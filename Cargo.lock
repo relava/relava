@@ -1289,6 +1289,8 @@ dependencies = [
  "dirs",
  "relava-types",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tokio",
  "tower",
 ]
