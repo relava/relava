@@ -1,0 +1,312 @@
+use std::path::{Path, PathBuf};
+
+use relava_types::validate::{self, AgentType, ResourceType};
+
+use crate::install;
+
+/// Options for the remove command.
+pub struct RemoveOpts<'a> {
+    pub resource_type: ResourceType,
+    pub name: &'a str,
+    pub project_dir: &'a Path,
+    pub json: bool,
+    pub verbose: bool,
+}
+
+/// Result of a successful remove, used for JSON output.
+#[derive(Debug, serde::Serialize)]
+pub struct RemoveResult {
+    pub resource_type: String,
+    pub name: String,
+    pub removed_path: String,
+    /// Whether a resource was actually removed from disk.
+    pub was_removed: bool,
+}
+
+/// Run `relava remove <type> <name>`.
+///
+/// Deletes the installed resource files from the project. Skills are
+/// directories; agents, commands, and rules are individual .md files.
+/// Warns (does not error) if the resource is not installed.
+/// Cleans up empty parent directories after removal.
+pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
+    // Validate the resource name
+    validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
+
+    // Check if installed — warn but don't error
+    if !install::is_installed(opts.project_dir, opts.resource_type, opts.name) {
+        if !opts.json {
+            eprintln!(
+                "[warn] {} '{}' is not installed",
+                opts.resource_type, opts.name
+            );
+        }
+        return Ok(RemoveResult {
+            resource_type: opts.resource_type.to_string(),
+            name: opts.name.to_string(),
+            removed_path: String::new(),
+            was_removed: false,
+        });
+    }
+
+    let target_path = resource_path(opts.project_dir, opts.resource_type, opts.name);
+
+    if opts.verbose {
+        eprintln!("removing {}", target_path.display());
+    }
+
+    let remove_err = |e| format!("failed to remove {}: {e}", target_path.display());
+    match opts.resource_type {
+        ResourceType::Skill => {
+            std::fs::remove_dir_all(&target_path).map_err(remove_err)?;
+        }
+        ResourceType::Agent | ResourceType::Command | ResourceType::Rule => {
+            std::fs::remove_file(&target_path).map_err(remove_err)?;
+        }
+    }
+
+    // Clean up empty parent directories
+    cleanup_empty_parents(&target_path, opts.project_dir);
+
+    let removed_display = target_path
+        .strip_prefix(opts.project_dir)
+        .unwrap_or(&target_path)
+        .to_string_lossy()
+        .to_string();
+
+    if !opts.json {
+        println!("Removed {} '{}'", opts.resource_type, opts.name);
+    }
+
+    Ok(RemoveResult {
+        resource_type: opts.resource_type.to_string(),
+        name: opts.name.to_string(),
+        removed_path: removed_display,
+        was_removed: true,
+    })
+}
+
+/// Compute the filesystem path for an installed resource.
+fn resource_path(project_dir: &Path, resource_type: ResourceType, name: &str) -> PathBuf {
+    let agent_type = AgentType::Claude;
+    match resource_type {
+        ResourceType::Skill => project_dir.join(agent_type.skills_dir()).join(name),
+        ResourceType::Agent => project_dir
+            .join(agent_type.agents_dir())
+            .join(format!("{name}.md")),
+        ResourceType::Command => project_dir
+            .join(agent_type.commands_dir())
+            .join(format!("{name}.md")),
+        ResourceType::Rule => project_dir
+            .join(agent_type.rules_dir())
+            .join(format!("{name}.md")),
+    }
+}
+
+/// Walk up from a removed path and remove empty directories, stopping
+/// at (but never removing) `stop_at`.
+fn cleanup_empty_parents(removed_path: &Path, stop_at: &Path) {
+    let mut current = removed_path.parent();
+    while let Some(dir) = current {
+        if dir == stop_at || !dir.starts_with(stop_at) {
+            break;
+        }
+        match std::fs::remove_dir(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+            Err(e) => {
+                eprintln!("[warn] could not clean up {}: {e}", dir.display());
+                break;
+            }
+        }
+        current = dir.parent();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn temp_dir() -> TempDir {
+        TempDir::new().expect("failed to create temp dir")
+    }
+
+    #[test]
+    fn remove_skill_deletes_directory() {
+        let root = temp_dir();
+        let skill_dir = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
+        fs::write(skill_dir.join("extra.md"), "extra").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resource_type, "skill");
+        assert_eq!(result.name, "denden");
+        assert!(result.was_removed);
+        assert!(!skill_dir.exists());
+    }
+
+    #[test]
+    fn remove_agent_deletes_file() {
+        let root = temp_dir();
+        let agents_dir = root.path().join(".claude/agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Agent,
+            name: "debugger",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resource_type, "agent");
+        assert!(!agents_dir.join("debugger.md").exists());
+    }
+
+    #[test]
+    fn remove_command_deletes_file() {
+        let root = temp_dir();
+        let cmds_dir = root.path().join(".claude/commands");
+        fs::create_dir_all(&cmds_dir).unwrap();
+        fs::write(cmds_dir.join("deploy.md"), "# Deploy").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Command,
+            name: "deploy",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resource_type, "command");
+        assert!(!cmds_dir.join("deploy.md").exists());
+    }
+
+    #[test]
+    fn remove_rule_deletes_file() {
+        let root = temp_dir();
+        let rules_dir = root.path().join(".claude/rules");
+        fs::create_dir_all(&rules_dir).unwrap();
+        fs::write(rules_dir.join("no-console-log.md"), "# Rule").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Rule,
+            name: "no-console-log",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        let result = run(&opts).unwrap();
+        assert_eq!(result.resource_type, "rule");
+        assert!(!rules_dir.join("no-console-log.md").exists());
+    }
+
+    #[test]
+    fn remove_not_installed_warns() {
+        let root = temp_dir();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Skill,
+            name: "nonexistent",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        // Should succeed with warning, not error
+        let result = run(&opts).unwrap();
+        assert!(!result.was_removed);
+        assert_eq!(result.removed_path, "");
+    }
+
+    #[test]
+    fn remove_cleans_empty_parents() {
+        let root = temp_dir();
+        let agents_dir = root.path().join(".claude/agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Agent,
+            name: "debugger",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        run(&opts).unwrap();
+        // .claude/agents/ should be removed (empty after file deletion)
+        assert!(!agents_dir.exists());
+        // .claude/ should also be removed (empty after agents/ removal)
+        assert!(!root.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn remove_preserves_nonempty_parent() {
+        let root = temp_dir();
+        let agents_dir = root.path().join(".claude/agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
+        fs::write(agents_dir.join("other.md"), "# Other").unwrap();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Agent,
+            name: "debugger",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        run(&opts).unwrap();
+        // agents/ dir should still exist (has other.md)
+        assert!(agents_dir.exists());
+        assert!(agents_dir.join("other.md").exists());
+    }
+
+    #[test]
+    fn remove_not_installed_json_mode_also_ok() {
+        let root = temp_dir();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Skill,
+            name: "nonexistent",
+            project_dir: root.path(),
+            json: true,
+            verbose: false,
+        };
+
+        // JSON mode should also return Ok (consistent with non-JSON)
+        let result = run(&opts).unwrap();
+        assert!(!result.was_removed);
+    }
+
+    #[test]
+    fn remove_invalid_slug_errors() {
+        let root = temp_dir();
+
+        let opts = RemoveOpts {
+            resource_type: ResourceType::Skill,
+            name: "Invalid-Name",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        assert!(run(&opts).is_err());
+    }
+}
