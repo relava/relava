@@ -1408,7 +1408,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 6. Local store directory structure — create and manage `~/.relava/store/<type>/<name>/<version>/`
 - ⬜ 7. SQLite database setup — schema creation (resources, versions tables), migrations
 - ⬜ 8. `relava init` — create empty project `relava.toml`
-- ⬜ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations — *depends on 6, 7, 3a*
+- ⬜ 9. `relava install <type> <name>` — resolve version, download files via HTTP from server, write to correct Claude Code locations. Flags: `--version`, `--save`, `--global`, `--update`, `--recursive`, `--force`, `--skip-tools`, `-y/--yes` — *depends on 6, 7, 3a*
 - ⬜ 9a. HTTP download transport — implement `GET /resources/:type/:name/versions/:version/download` client, cache downloaded files in `~/.relava/cache/` — *depends on 6*
 - ⬜ 10. Skill installation logic — write `SKILL.md` + support files to `.claude/skills/<name>/`, handle multi-file directories
 - ⬜ 10a. Tool installation — parse `metadata.relava.tools`, check PATH via `which`, detect OS, prompt user, execute install commands — *depends on 2*
@@ -1417,7 +1417,8 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 12a. Dependency resolution from frontmatter — parse `metadata.relava.skills` and `metadata.relava.agents` from `.md` files in the registry — *depends on 2*
 - ⬜ 12b. Client-side DFS resolver for skills — recursively resolve skill dependencies from local store, build deduplicated leaf-first install order, detect circular deps, enforce depth limit of 100 — *depends on 12a*
 - ⬜ 12c. Dependency-aware install — install transitive dependencies in resolved order before the target resource, skip already-installed versions — *depends on 9, 12b*
-- ⬜ 14. `relava remove <type> <name>` — delete resource files from project, clean up empty dirs
+- ⬜ 13. Lockfile management — write/update `relava.lock` after install/remove with directInstalls and packages (including dependents tracking) — *depends on 9, 12c*
+- ⬜ 14. `relava remove <type> <name>` — delete resource files, remove from lockfile, clean up orphaned transitive deps
 - ⬜ 15. `--save` flag — write resource name + version to project `relava.toml` on install, remove entry on remove — *depends on 3*
 
 #### Week 3 — Remaining CLI Commands
@@ -1427,9 +1428,12 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 18. `relava update <type> <name>` — download new version from registry, overwrite project files — *depends on 9*
 - ⬜ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
 - ⬜ 20. `relava doctor` — check server reachability, validate project relava.toml against installed files
-- ⬜ 21. `relava install relava.toml` — read project manifest, resolve all declared resources, bulk install — *depends on 3, 9*
+- ⬜ 21. `relava install relava.toml` — read project manifest, use `relava.lock` for exact versions if present, otherwise resolve fresh and create lockfile — *depends on 3, 9, 13*
 - ⬜ 22. `relava import <type> <path>` — scan existing resource directory/file, validate structure, publish to registry
 - ⬜ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), does not install — *depends on 12b*
+- ⬜ 22b. `relava validate <type> <path>` — offline pre-publish validation (slug, structure, frontmatter, file limits, file type filtering, semver, deps) — *depends on 4, 4a, 5*
+- ⬜ 22c. File type filtering — binary detection (null-byte check in first 8KB), enforce text-only for skills/commands/rules, any files for agents — *depends on 4*
+- ⬜ 22d. Rich console output — `comfy-table` for tables (list/search/info), `colored` for status tags, `--json` mode for structured output
 - ⬜ 23. Disable/enable mechanism — rename files with `.disabled` suffix
 - ⬜ 24. End-to-end integration testing — publish to local store, install into test project, list, update, remove cycle
 
@@ -1454,7 +1458,7 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ⬜ 32. Search endpoint with SQLite FTS5 — `GET /resources?q=search&type=skill`, full-text indexing of name + description + keywords
 - ⬜ 33. `relava search <query>` CLI command — search resources via server API — *depends on 32*
 - ⬜ 34. Health and stats endpoints — `GET /health`, `GET /stats` (resource count, version count)
-- ⬜ 35. `relava publish <type> <name>` — read manifest, validate slug + fields + file limits (100 files / 10MB each / 50MB total), compute SHA-256 per file, multipart HTTP POST to server — *depends on 27, 4a*
+- ⬜ 35. `relava publish <type> <name>` — read manifest, validate slug + fields + file limits + file type filtering (100 files / 10MB each / 50MB total), compute SHA-256 per file, multipart HTTP POST to server — *depends on 27, 4a, 22c*
 - ⬜ 35a. Server-side publish validation — parse multipart payload, validate slug format, semver, version monotonicity, dependency existence, file limits, store in `~/.relava/store/` — *depends on 27*
 - ⬜ 35b. Download endpoint — `GET /resources/:type/:name/versions/:version/download` serves resource files for CLI install — *depends on 27*
 - ⬜ 35c. Version auto-increment — on publish without explicit version, auto-increment patch from latest published version — *depends on 35a*
