@@ -5,11 +5,11 @@
 //! port, and start timestamp for reliable process tracking.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::output::Tag;
 
@@ -18,23 +18,27 @@ use crate::output::Tag;
 // ---------------------------------------------------------------------------
 
 /// Persisted server state written to `~/.relava/server.pid`.
-#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ServerState {
     pid: u32,
     port: u16,
     started_at: u64,
 }
 
+/// Return the `~/.relava` directory path.
+fn relava_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("cannot determine home directory")?;
+    Ok(home.join(".relava"))
+}
+
 /// Return the path to the server state file (`~/.relava/server.pid`).
 fn state_file_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("cannot determine home directory")?;
-    Ok(home.join(".relava").join("server.pid"))
+    Ok(relava_dir()?.join("server.pid"))
 }
 
 /// Return the path to the server log file (`~/.relava/server.log`).
 fn log_file_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("cannot determine home directory")?;
-    Ok(home.join(".relava").join("server.log"))
+    Ok(relava_dir()?.join("server.log"))
 }
 
 /// Read the current server state from the PID file.
@@ -76,6 +80,10 @@ fn remove_state() -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Check whether a process with the given PID is still running.
+///
+/// Note: `kill -0` cannot distinguish "not found" (ESRCH) from "not
+/// permitted" (EPERM). If the server was started by a different user,
+/// this reports it as not running. Acceptable for single-user local usage.
 fn is_process_running(pid: u32) -> bool {
     // `kill -0 <pid>` checks existence without sending a signal.
     Command::new("kill")
@@ -132,6 +140,17 @@ fn check_existing_server() -> Result<Option<ServerState>, String> {
         remove_state()?;
     }
     Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// Output helpers
+// ---------------------------------------------------------------------------
+
+/// Print a serializable value as pretty JSON.
+fn print_json(value: &impl Serialize) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value).map_err(|e| format!("json error: {e}"))?;
+    println!("{json}");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +214,7 @@ pub fn start(port: u16, daemon: bool, json: bool, verbose: bool) -> Result<(), S
 }
 
 /// Start the server in daemon (background) mode.
-fn start_daemon(binary: &PathBuf, port: u16, json: bool, verbose: bool) -> Result<(), String> {
+fn start_daemon(binary: &Path, port: u16, json: bool, verbose: bool) -> Result<(), String> {
     let log_path = log_file_path()?;
 
     // Open log file for daemon output.
@@ -241,17 +260,13 @@ fn start_daemon(binary: &PathBuf, port: u16, json: bool, verbose: bool) -> Resul
     let url = format!("http://127.0.0.1:{port}");
 
     if json {
-        let result = StartResult {
+        print_json(&StartResult {
             status: "started",
             pid,
             port,
             daemon: true,
             url,
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).map_err(|e| format!("json error: {e}"))?
-        );
+        })?;
     } else {
         println!(
             "{}",
@@ -269,13 +284,7 @@ fn start_daemon(binary: &PathBuf, port: u16, json: bool, verbose: bool) -> Resul
 }
 
 /// Start the server in foreground mode (blocking).
-fn start_foreground(binary: &PathBuf, port: u16, json: bool, _verbose: bool) -> Result<(), String> {
-    let state = ServerState {
-        pid: std::process::id(), // Placeholder; updated below with child PID.
-        port,
-        started_at: now_secs(),
-    };
-
+fn start_foreground(binary: &Path, port: u16, json: bool, _verbose: bool) -> Result<(), String> {
     let mut child = Command::new(binary)
         .env("RELAVA_PORT", port.to_string())
         .env("RELAVA_HOST", "127.0.0.1")
@@ -285,8 +294,11 @@ fn start_foreground(binary: &PathBuf, port: u16, json: bool, _verbose: bool) -> 
         .map_err(|e| format!("failed to start server: {e}"))?;
 
     let pid = child.id();
-    let updated_state = ServerState { pid, ..state };
-    write_state(&updated_state)?;
+    write_state(&ServerState {
+        pid,
+        port,
+        started_at: now_secs(),
+    })?;
 
     if !json {
         println!(
@@ -304,21 +316,30 @@ fn start_foreground(binary: &PathBuf, port: u16, json: bool, _verbose: bool) -> 
         .map_err(|e| format!("failed to wait for server process: {e}"))?;
 
     // Clean up PID file on exit.
-    let _ = remove_state();
+    if let Err(e) = remove_state() {
+        eprintln!(
+            "{}",
+            Tag::Warn.fmt(&format!("failed to clean up PID file: {e}"))
+        );
+    }
+
+    let result_status = if status.success() {
+        "stopped"
+    } else {
+        "failed"
+    };
 
     if json {
-        let result = StartResult {
-            status: "stopped",
+        print_json(&StartResult {
+            status: result_status,
             pid,
             port,
             daemon: false,
             url: format!("http://127.0.0.1:{port}"),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).map_err(|e| format!("json error: {e}"))?
-        );
-    } else if !status.success() {
+        })?;
+    }
+
+    if !status.success() {
         return Err(format!("server exited with {status}"));
     }
 
@@ -355,24 +376,22 @@ pub fn stop(json: bool, _verbose: bool) -> Result<(), String> {
     }
 
     if is_process_running(state.pid) {
+        let pid_path = state_file_path().unwrap_or_default();
         return Err(format!(
             "server (PID {}) did not stop within 5 seconds. \
-             You may need to force-kill it.",
+             You may need to force-kill it and remove {}.",
             state.pid,
+            pid_path.display(),
         ));
     }
 
     remove_state()?;
 
     if json {
-        let result = StopResult {
+        print_json(&StopResult {
             status: "stopped",
             pid: state.pid,
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).map_err(|e| format!("json error: {e}"))?
-        );
+        })?;
     } else {
         println!(
             "{}",
@@ -389,18 +408,13 @@ pub fn status(json: bool, _verbose: bool) -> Result<(), String> {
         Some(s) => s,
         None => {
             if json {
-                let result = StatusResult {
+                print_json(&StatusResult {
                     running: false,
                     pid: None,
                     port: None,
                     url: None,
                     uptime_secs: None,
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result)
-                        .map_err(|e| format!("json error: {e}"))?
-                );
+                })?;
             } else {
                 println!("{}", Tag::Warn.fmt("Server is not running"));
             }
@@ -412,17 +426,13 @@ pub fn status(json: bool, _verbose: bool) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{}", state.port);
 
     if json {
-        let result = StatusResult {
+        print_json(&StatusResult {
             running: true,
             pid: Some(state.pid),
             port: Some(state.port),
             url: Some(url),
             uptime_secs: Some(uptime),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).map_err(|e| format!("json error: {e}"))?
-        );
+        })?;
     } else {
         println!("{}", Tag::Ok.fmt(&format!("Server running on {url}")));
         println!("{}", Tag::Ok.fmt(&format!("PID: {}", state.pid)));
@@ -615,9 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn write_and_remove_state_in_temp_dir() {
-        // This test exercises serialization/deserialization but uses the real
-        // state_file_path, so only verify the JSON format here.
+    fn server_state_pretty_serialization() {
         let state = ServerState {
             pid: 99999,
             port: 8080,
