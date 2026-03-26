@@ -85,10 +85,7 @@ fn scan_type(
     let read_dir = match std::fs::read_dir(&type_dir) {
         Ok(rd) => rd,
         Err(e) => {
-            eprintln!(
-                "[warn] cannot read {}: {e}",
-                type_dir.display()
-            );
+            eprintln!("[warn] cannot read {}: {e}", type_dir.display());
             return entries;
         }
     };
@@ -177,10 +174,7 @@ fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
 /// Print a formatted table of list entries.
 fn print_table(entries: &[ListEntry]) {
     // Header
-    println!(
-        "{:<24} {:<10} {:<12} STATUS",
-        "NAME", "TYPE", "VERSION"
-    );
+    println!("{:<24} {:<10} {:<12} STATUS", "NAME", "TYPE", "VERSION");
     println!("{}", "-".repeat(56));
     for entry in entries {
         let version_display = if entry.version.is_empty() {

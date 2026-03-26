@@ -151,8 +151,7 @@ fn main() {
         }
         Command::List { resource_type } => {
             let rt = resource_type.as_ref().map(|s| {
-                install::parse_resource_type(s)
-                    .unwrap_or_else(|e| exit_with_error(&e, cli.json))
+                install::parse_resource_type(s).unwrap_or_else(|e| exit_with_error(&e, cli.json))
             });
 
             let project_dir = resolve_project_dir(cli.project.as_deref());

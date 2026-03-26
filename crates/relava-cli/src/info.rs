@@ -121,11 +121,7 @@ fn dir_size(path: &Path) -> (usize, u64) {
 /// Look up version from relava.toml.
 ///
 /// Returns empty string if relava.toml does not exist. Warns on parse errors.
-fn load_manifest_version(
-    project_dir: &Path,
-    resource_type: ResourceType,
-    name: &str,
-) -> String {
+fn load_manifest_version(project_dir: &Path, resource_type: ResourceType, name: &str) -> String {
     let path = project_dir.join("relava.toml");
     let manifest = match ProjectManifest::from_file(&path) {
         Ok(m) => m,
@@ -251,7 +247,11 @@ mod tests {
         let root = temp_dir();
         let skill_dir = root.path().join(".claude/skills/denden");
         fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "# Denden\nA communication skill.").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Denden\nA communication skill.",
+        )
+        .unwrap();
         fs::write(skill_dir.join("extra.md"), "extra content").unwrap();
 
         let opts = InfoOpts {
@@ -300,7 +300,11 @@ mod tests {
         let root = temp_dir();
         let cmds_dir = root.path().join(".claude/commands");
         fs::create_dir_all(&cmds_dir).unwrap();
-        fs::write(cmds_dir.join("deploy.md"), "# Deploy\nDeploy to production.").unwrap();
+        fs::write(
+            cmds_dir.join("deploy.md"),
+            "# Deploy\nDeploy to production.",
+        )
+        .unwrap();
 
         let opts = InfoOpts {
             resource_type: ResourceType::Command,
