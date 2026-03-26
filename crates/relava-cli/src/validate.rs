@@ -108,14 +108,16 @@ impl Checks {
     }
 
     fn counts(&self) -> (usize, usize) {
-        let mut passed = 0;
-        let mut failures = 0;
-        for c in &self.inner {
-            match c.status {
-                CheckStatus::Pass => passed += 1,
-                CheckStatus::Fail => failures += 1,
-            }
-        }
+        let passed = self
+            .inner
+            .iter()
+            .filter(|c| c.status == CheckStatus::Pass)
+            .count();
+        let failures = self
+            .inner
+            .iter()
+            .filter(|c| c.status == CheckStatus::Fail)
+            .count();
         (passed, failures)
     }
 
@@ -157,13 +159,9 @@ pub fn run(opts: &ValidateOpts) -> Result<ValidateResult, String> {
     // 4 & 5. File limits and file type filtering
     check_files(&mut checks, &path, opts.resource_type);
 
-    // 6. Semver format (if version present in frontmatter)
+    // 6 & 7. Semver format and dependency declarations (require parsed frontmatter)
     if let Some(ref fm) = frontmatter {
         check_semver(&mut checks, fm);
-    }
-
-    // 7. Dependency existence (offline check — just validates they are declared)
-    if let Some(ref fm) = frontmatter {
         check_dependencies(&mut checks, fm);
     }
 
@@ -272,26 +270,8 @@ fn check_frontmatter(
 
     // Extract metadata.relava dependencies
     let relava_block = yaml_value.get("metadata").and_then(|m| m.get("relava"));
-
-    let skills = relava_block
-        .and_then(|r| r.get("skills"))
-        .and_then(|s| s.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let agents = relava_block
-        .and_then(|r| r.get("agents"))
-        .and_then(|s| s.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let skills = extract_string_list(relava_block, "skills");
+    let agents = extract_string_list(relava_block, "agents");
 
     checks.pass("frontmatter", "Frontmatter parseable");
 
@@ -314,16 +294,11 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
     };
 
     // 4a. File count
+    let file_count_msg = format!("File count: {} (max {MAX_FILE_COUNT})", files.len());
     if files.len() > MAX_FILE_COUNT {
-        checks.fail(
-            "file_count",
-            format!("File count: {} (max {MAX_FILE_COUNT})", files.len()),
-        );
+        checks.fail("file_count", file_count_msg);
     } else {
-        checks.pass(
-            "file_count",
-            format!("File count: {} (max {MAX_FILE_COUNT})", files.len()),
-        );
+        checks.pass("file_count", file_count_msg);
     }
 
     // 4b. File sizes
@@ -373,24 +348,15 @@ fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
     }
 
     // Report total size
+    let total_size_msg = format!(
+        "Total size: {} (max {})",
+        format_size(total_size),
+        format_size(MAX_TOTAL_SIZE)
+    );
     if total_size > MAX_TOTAL_SIZE {
-        checks.fail(
-            "total_size",
-            format!(
-                "Total size: {} (max {})",
-                format_size(total_size),
-                format_size(MAX_TOTAL_SIZE)
-            ),
-        );
+        checks.fail("total_size", total_size_msg);
     } else {
-        checks.pass(
-            "total_size",
-            format!(
-                "Total size: {} (max {})",
-                format_size(total_size),
-                format_size(MAX_TOTAL_SIZE)
-            ),
-        );
+        checks.pass("total_size", total_size_msg);
     }
 
     // 5. File type filtering
@@ -477,6 +443,19 @@ fn check_dependencies(checks: &mut Checks, fm: &FrontmatterData) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Extract a list of strings from a YAML mapping key.
+fn extract_string_list(parent: Option<&serde_yaml::Value>, key: &str) -> Vec<String> {
+    parent
+        .and_then(|p| p.get(key))
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// Derive the resource name from a path.
 fn derive_name(path: &Path) -> Result<String, String> {
