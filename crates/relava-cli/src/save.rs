@@ -17,16 +17,12 @@ pub fn add_to_manifest(
     let mut action = None;
     with_manifest(project_dir, json, |manifest| {
         let section = manifest_section(manifest, resource_type);
-        let old = section.insert(name.to_string(), version.to_string());
-        match old.as_deref() {
-            Some(v) if v == version => {
-                // Same version already recorded — skip write
-                section.insert(name.to_string(), v.to_string());
-                return false;
-            }
+        match section.get(name) {
+            Some(existing) if existing == version => return false,
             Some(_) => action = Some("Updated"),
             None => action = Some("Added"),
         }
+        section.insert(name.to_string(), version.to_string());
         true
     })?;
 

@@ -132,8 +132,9 @@ fn main() {
 
             match remove::run(&opts) {
                 Ok(result) => {
+                    // Always run --save on remove: clean up manifest even
+                    // if files were already gone from disk.
                     if save
-                        && result.was_removed
                         && let Err(e) =
                             save::remove_from_manifest(&project_dir, rt, &name, cli.json)
                     {
