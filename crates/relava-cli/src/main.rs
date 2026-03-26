@@ -4,6 +4,7 @@ mod env_check;
 mod init;
 mod install;
 mod registry;
+mod resolver;
 mod tools;
 
 use clap::Parser;

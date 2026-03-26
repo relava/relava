@@ -56,7 +56,7 @@ impl std::fmt::Display for AgentType {
 }
 
 /// Resource types managed by Relava.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceType {
     Skill,
     Agent,

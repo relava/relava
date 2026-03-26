@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::DownloadCache;
 use crate::env_check::{self, EnvResult, EnvStatus};
 use crate::registry::RegistryClient;
+use crate::resolver;
 use crate::tools::{self, ToolResult, ToolStatus};
 use relava_types::manifest::ResourceMeta;
 use relava_types::validate::{self, AgentType, ResourceType};
@@ -21,6 +22,16 @@ pub struct InstallOpts<'a> {
     pub yes: bool,
 }
 
+/// Result of installing a single dependency.
+#[derive(Debug, serde::Serialize)]
+pub struct DepInstallResult {
+    pub resource_type: String,
+    pub name: String,
+    pub version: String,
+    /// "installed" or "skipped" (already installed).
+    pub status: String,
+}
+
 /// Result of a successful install, used for JSON output.
 #[derive(Debug, serde::Serialize)]
 pub struct InstallResult {
@@ -32,6 +43,9 @@ pub struct InstallResult {
     /// Files that were overwritten during installation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub overwritten: Vec<String>,
+    /// Transitive dependencies installed before this resource.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<DepInstallResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -83,27 +97,20 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         );
     }
 
-    // Check cache first, download if needed
-    let file_paths = if cache.is_cached(opts.resource_type, opts.name, &version) {
-        if opts.verbose {
-            eprintln!("  using cached version");
-        }
-        cache
-            .list_files(opts.resource_type, opts.name, &version)
-            .map_err(|e| e.to_string())?
-    } else {
-        if opts.verbose {
-            eprintln!("  downloading from {}", opts.server_url);
-        }
-        let response = client
-            .download(opts.resource_type, opts.name, &version)
-            .map_err(|e| e.to_string())?;
-        cache
-            .store(opts.resource_type, opts.name, &version, &response)
-            .map_err(|e| e.to_string())?
-    };
+    // Download the root resource first (needed for dependency resolution)
+    let file_paths = download_resource(
+        &client,
+        &cache,
+        opts.resource_type,
+        opts.name,
+        &version,
+        opts,
+    )?;
 
-    // Write files to the correct Claude Code location
+    // Resolve transitive dependencies and install them leaf-first
+    let dep_results = resolve_and_install_deps(&client, &cache, opts, &install_root, &version)?;
+
+    // Write the root resource files to the correct Claude Code location
     let WriteResult {
         install_dir,
         overwritten,
@@ -156,9 +163,169 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
         files: file_paths,
         install_dir: install_dir_display,
         overwritten,
+        dependencies: dep_results,
         tools: tool_results,
         env: env_results,
     })
+}
+
+/// Download a resource into the cache if not already cached.
+/// Returns the list of file paths in the cache.
+fn download_resource(
+    client: &RegistryClient,
+    cache: &DownloadCache,
+    resource_type: ResourceType,
+    name: &str,
+    version: &Version,
+    opts: &InstallOpts,
+) -> Result<Vec<String>, String> {
+    if cache.is_cached(resource_type, name, version) {
+        if opts.verbose {
+            eprintln!("  using cached version");
+        }
+        cache
+            .list_files(resource_type, name, version)
+            .map_err(|e| e.to_string())
+    } else {
+        if opts.verbose {
+            eprintln!("  downloading from {}", opts.server_url);
+        }
+        let response = client
+            .download(resource_type, name, version)
+            .map_err(|e| e.to_string())?;
+        cache
+            .store(resource_type, name, version, &response)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Resolve transitive dependencies and install them in leaf-first order.
+///
+/// Returns a list of `DepInstallResult` for each dependency processed.
+fn resolve_and_install_deps(
+    client: &RegistryClient,
+    cache: &DownloadCache,
+    opts: &InstallOpts,
+    install_root: &Path,
+    version: &Version,
+) -> Result<Vec<DepInstallResult>, String> {
+    let deps = resolver::resolve(client, cache, opts.resource_type, opts.name, version)
+        .map_err(|e| e.to_string())?;
+
+    if deps.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+
+    for dep in &deps {
+        // Check if already installed
+        if is_installed(install_root, dep.resource_type, &dep.name) {
+            if !opts.json {
+                println!(
+                    "  [dep]     {} {}@{} (already installed)",
+                    dep.resource_type, dep.name, dep.version
+                );
+            }
+            results.push(DepInstallResult {
+                resource_type: dep.resource_type.to_string(),
+                name: dep.name.clone(),
+                version: dep.version.to_string(),
+                status: "skipped".to_string(),
+            });
+            continue;
+        }
+
+        // Download if needed
+        download_resource(
+            client,
+            cache,
+            dep.resource_type,
+            &dep.name,
+            &dep.version,
+            opts,
+        )?;
+
+        // Write to project
+        let WriteResult { overwritten, .. } = write_to_project(
+            install_root,
+            dep.resource_type,
+            &dep.name,
+            &dep.version,
+            cache,
+        )
+        .map_err(|e| e.to_string())?;
+
+        if !opts.json {
+            for file in &overwritten {
+                println!("  [warn]    Overwrote existing file: {file}");
+            }
+            println!(
+                "  [dep]     {} {}@{}",
+                dep.resource_type, dep.name, dep.version
+            );
+        }
+
+        // Post-install for skill deps
+        if dep.resource_type == ResourceType::Skill {
+            let dep_install_dir = install_root
+                .join(AgentType::Claude.skills_dir())
+                .join(&dep.name);
+            let dep_opts = InstallOpts {
+                server_url: opts.server_url,
+                resource_type: dep.resource_type,
+                name: &dep.name,
+                version_pin: None,
+                project_dir: opts.project_dir,
+                global: opts.global,
+                json: opts.json,
+                verbose: opts.verbose,
+                yes: opts.yes,
+            };
+            let (tool_results, env_results) = run_skill_post_install(&dep_opts, &dep_install_dir)?;
+            if !opts.json {
+                for result in &tool_results {
+                    print_tool_result(result);
+                }
+                for result in &env_results {
+                    print_env_result(result);
+                }
+            }
+        }
+
+        results.push(DepInstallResult {
+            resource_type: dep.resource_type.to_string(),
+            name: dep.name.clone(),
+            version: dep.version.to_string(),
+            status: "installed".to_string(),
+        });
+    }
+
+    Ok(results)
+}
+
+/// Check if a resource is already installed in the project.
+fn is_installed(install_root: &Path, resource_type: ResourceType, name: &str) -> bool {
+    let agent_type = AgentType::Claude;
+    match resource_type {
+        ResourceType::Skill => install_root
+            .join(agent_type.skills_dir())
+            .join(name)
+            .join("SKILL.md")
+            .exists(),
+        ResourceType::Agent => install_root
+            .join(agent_type.agents_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+        ResourceType::Command => install_root
+            .join(agent_type.commands_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+        ResourceType::Rule => install_root
+            .join(agent_type.rules_dir())
+            .join(format!("{name}.md"))
+            .exists(),
+    }
 }
 
 /// Run skill-specific post-install steps: tool checking and env var validation.
@@ -953,6 +1120,7 @@ Review code for security issues.
             files: vec!["SKILL.md".to_string()],
             install_dir: ".claude/skills/code-review".to_string(),
             overwritten: Vec::new(),
+            dependencies: Vec::new(),
             tools: vec![ToolResult {
                 name: "gh".to_string(),
                 description: "GitHub CLI".to_string(),
@@ -983,6 +1151,7 @@ Review code for security issues.
             files: vec!["debugger.md".to_string()],
             install_dir: ".claude/agents".to_string(),
             overwritten: Vec::new(),
+            dependencies: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
         };
@@ -1221,6 +1390,7 @@ Review code for security issues.
             files: vec!["debugger.md".to_string()],
             install_dir: ".claude/agents".to_string(),
             overwritten: vec!["debugger.md".to_string()],
+            dependencies: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
         };
@@ -1239,6 +1409,7 @@ Review code for security issues.
             files: vec!["debugger.md".to_string()],
             install_dir: ".claude/agents".to_string(),
             overwritten: Vec::new(),
+            dependencies: Vec::new(),
             tools: Vec::new(),
             env: Vec::new(),
         };
@@ -1291,5 +1462,174 @@ Review code for security issues.
         // Both agents should exist side by side
         assert!(project.path().join(".claude/agents/debugger.md").exists());
         assert!(project.path().join(".claude/agents/reviewer.md").exists());
+    }
+
+    // -- is_installed tests --
+
+    #[test]
+    fn is_installed_skill_not_present() {
+        let project = temp_dir();
+        assert!(!is_installed(project.path(), ResourceType::Skill, "denden"));
+    }
+
+    #[test]
+    fn is_installed_skill_present() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_skill(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        write_to_project(project.path(), ResourceType::Skill, "denden", &v, &cache).unwrap();
+        assert!(is_installed(project.path(), ResourceType::Skill, "denden"));
+    }
+
+    #[test]
+    fn is_installed_agent_not_present() {
+        let project = temp_dir();
+        assert!(!is_installed(
+            project.path(),
+            ResourceType::Agent,
+            "debugger"
+        ));
+    }
+
+    #[test]
+    fn is_installed_agent_present() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_agent(cache_dir.path());
+        let v = Version::parse("0.5.0").unwrap();
+        write_to_project(project.path(), ResourceType::Agent, "debugger", &v, &cache).unwrap();
+        assert!(is_installed(
+            project.path(),
+            ResourceType::Agent,
+            "debugger"
+        ));
+    }
+
+    #[test]
+    fn is_installed_command_not_present() {
+        let project = temp_dir();
+        assert!(!is_installed(
+            project.path(),
+            ResourceType::Command,
+            "commit"
+        ));
+    }
+
+    #[test]
+    fn is_installed_command_present() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_command(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        write_to_project(project.path(), ResourceType::Command, "commit", &v, &cache).unwrap();
+        assert!(is_installed(
+            project.path(),
+            ResourceType::Command,
+            "commit"
+        ));
+    }
+
+    #[test]
+    fn is_installed_rule_not_present() {
+        let project = temp_dir();
+        assert!(!is_installed(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log"
+        ));
+    }
+
+    #[test]
+    fn is_installed_rule_present() {
+        let project = temp_dir();
+        let cache_dir = temp_dir();
+        let cache = setup_cache_with_rule(cache_dir.path());
+        let v = Version::parse("1.0.0").unwrap();
+        write_to_project(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log",
+            &v,
+            &cache,
+        )
+        .unwrap();
+        assert!(is_installed(
+            project.path(),
+            ResourceType::Rule,
+            "no-console-log"
+        ));
+    }
+
+    // -- Dependency serialization tests --
+
+    #[test]
+    fn install_result_serializes_dependencies() {
+        let result = InstallResult {
+            resource_type: "skill".to_string(),
+            name: "code-review".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec!["SKILL.md".to_string()],
+            install_dir: ".claude/skills/code-review".to_string(),
+            overwritten: Vec::new(),
+            dependencies: vec![
+                DepInstallResult {
+                    resource_type: "skill".to_string(),
+                    name: "security-baseline".to_string(),
+                    version: "0.2.0".to_string(),
+                    status: "installed".to_string(),
+                },
+                DepInstallResult {
+                    resource_type: "skill".to_string(),
+                    name: "style-guide".to_string(),
+                    version: "1.0.0".to_string(),
+                    status: "skipped".to_string(),
+                },
+            ],
+            tools: Vec::new(),
+            env: Vec::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("\"dependencies\""));
+        assert!(json.contains("security-baseline"));
+        assert!(json.contains("style-guide"));
+        assert!(json.contains("\"installed\""));
+        assert!(json.contains("\"skipped\""));
+    }
+
+    #[test]
+    fn install_result_omits_empty_dependencies() {
+        let result = InstallResult {
+            resource_type: "skill".to_string(),
+            name: "leaf-skill".to_string(),
+            version: "1.0.0".to_string(),
+            files: vec!["SKILL.md".to_string()],
+            install_dir: ".claude/skills/leaf-skill".to_string(),
+            overwritten: Vec::new(),
+            dependencies: Vec::new(),
+            tools: Vec::new(),
+            env: Vec::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            !json.contains("\"dependencies\""),
+            "empty dependencies should be omitted"
+        );
+    }
+
+    #[test]
+    fn dep_install_result_serializes() {
+        let dep = DepInstallResult {
+            resource_type: "skill".to_string(),
+            name: "dep-a".to_string(),
+            version: "1.0.0".to_string(),
+            status: "installed".to_string(),
+        };
+
+        let json = serde_json::to_string_pretty(&dep).unwrap();
+        assert!(json.contains("dep-a"));
+        assert!(json.contains("\"installed\""));
     }
 }
