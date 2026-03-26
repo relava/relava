@@ -134,10 +134,13 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
     if !opts.json {
         // Emit overwrite warnings before the file summary
         for file in &overwritten {
-            println!("  [warn]    Overwrote existing file: {file}");
+            println!(
+                "{}",
+                crate::output::Tag::Warn.fmt(&format!("Overwrote existing file: {file}"))
+            );
         }
 
-        let type_tag = format!("[{}]", opts.resource_type);
+        let tag = crate::output::resource_tag(&opts.resource_type.to_string());
         let file_summary = if file_count == 1 {
             install_dir_display.clone()
         } else {
@@ -147,7 +150,7 @@ pub fn run(opts: &InstallOpts) -> Result<InstallResult, String> {
                 file_count - 1
             )
         };
-        println!("  {type_tag:<10}{file_summary}");
+        println!("{}", tag.fmt(&file_summary));
     }
 
     // Post-install: tool checking and env var validation (skills only)
@@ -248,8 +251,11 @@ fn resolve_and_install_deps(
         if dep.already_installed {
             if !opts.json {
                 println!(
-                    "  [skip]    {} {}@{} (already installed)",
-                    dep.resource_type, dep.name, dep.version
+                    "{}",
+                    crate::output::Tag::Skip.fmt(&format!(
+                        "{} {}@{} (already installed)",
+                        dep.resource_type, dep.name, dep.version
+                    ))
                 );
             }
             results.push(DepInstallResult {
@@ -267,8 +273,11 @@ fn resolve_and_install_deps(
 
         if !opts.json {
             println!(
-                "  [dep]     Installing {} {}@{}...",
-                dep.resource_type, dep.name, dep.version
+                "{}",
+                crate::output::Tag::Dep.fmt(&format!(
+                    "Installing {} {}@{}...",
+                    dep.resource_type, dep.name, dep.version
+                ))
             );
         }
 
@@ -400,7 +409,10 @@ fn run_skill_post_install(
         Ok(m) => m,
         Err(e) => {
             if !opts.json {
-                eprintln!("  [warn]    Could not parse skill metadata: {e}");
+                eprintln!(
+                    "{}",
+                    crate::output::Tag::Warn.fmt(&format!("Could not parse skill metadata: {e}"))
+                );
             }
             return Ok((Vec::new(), Vec::new()));
         }
@@ -451,7 +463,10 @@ fn print_tool_result(result: &ToolResult) {
         ToolStatus::NoCommand => "not found, no install command for this OS".to_string(),
         ToolStatus::Skipped => "not found on PATH (skipped)".to_string(),
     };
-    println!("  [tool]    {} — {suffix}", result.name);
+    println!(
+        "{}",
+        crate::output::Tag::Tool.fmt(&format!("{} — {suffix}", result.name))
+    );
 }
 
 /// Print an env var check result to stdout.
@@ -461,7 +476,10 @@ fn print_env_result(result: &EnvResult) {
             // Don't print anything for found vars (clean output)
         }
         EnvStatus::MissingRequired => {
-            println!("  [warn]    Missing required env: {}", result.name);
+            println!(
+                "{}",
+                crate::output::Tag::Warn.fmt(&format!("Missing required env: {}", result.name))
+            );
             if !result.description.is_empty() {
                 println!("            {}", result.description);
             }
@@ -470,8 +488,11 @@ fn print_env_result(result: &EnvResult) {
         EnvStatus::MissingOptional => {
             if !result.description.is_empty() {
                 println!(
-                    "  [warn]    Missing optional env: {} — {}",
-                    result.name, result.description
+                    "{}",
+                    crate::output::Tag::Warn.fmt(&format!(
+                        "Missing optional env: {} — {}",
+                        result.name, result.description
+                    ))
                 );
             }
         }

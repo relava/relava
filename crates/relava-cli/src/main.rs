@@ -11,6 +11,7 @@ mod init;
 mod install;
 mod list;
 mod lockfile;
+mod output;
 mod registry;
 mod remove;
 mod resolver;
@@ -58,6 +59,7 @@ fn resolve_project_dir(project_flag: Option<&str>) -> std::path::PathBuf {
 }
 
 fn main() {
+    output::init();
     let cli = Cli::parse();
 
     if cli.verbose {

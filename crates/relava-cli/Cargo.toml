@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 base64.workspace = true
 clap.workspace = true
+colored.workspace = true
+comfy-table.workspace = true
 dirs.workspace = true
 relava-types = { path = "../relava-types" }
 reqwest.workspace = true
