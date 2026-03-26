@@ -150,13 +150,10 @@ fn main() {
             }
         }
         Command::List { resource_type } => {
-            let rt = match resource_type {
-                Some(ref s) => Some(
-                    install::parse_resource_type(s)
-                        .unwrap_or_else(|e| exit_with_error(&e, cli.json)),
-                ),
-                None => None,
-            };
+            let rt = resource_type.as_ref().map(|s| {
+                install::parse_resource_type(s)
+                    .unwrap_or_else(|e| exit_with_error(&e, cli.json))
+            });
 
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
@@ -164,7 +161,7 @@ fn main() {
                 resource_type: rt,
                 project_dir: &project_dir,
                 json: cli.json,
-                verbose: cli.verbose,
+                _verbose: cli.verbose,
             };
 
             match list::run(&opts) {
@@ -190,7 +187,7 @@ fn main() {
                 name: &name,
                 project_dir: &project_dir,
                 json: cli.json,
-                verbose: cli.verbose,
+                _verbose: cli.verbose,
             };
 
             match info::run(&opts) {

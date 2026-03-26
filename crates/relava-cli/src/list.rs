@@ -25,7 +25,7 @@ pub struct ListOpts<'a> {
     pub resource_type: Option<ResourceType>,
     pub project_dir: &'a Path,
     pub json: bool,
-    pub verbose: bool,
+    pub _verbose: bool,
 }
 
 /// Run `relava list [type]`.
@@ -178,8 +178,8 @@ fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
 fn print_table(entries: &[ListEntry]) {
     // Header
     println!(
-        "{:<24} {:<10} {:<12} {}",
-        "NAME", "TYPE", "VERSION", "STATUS"
+        "{:<24} {:<10} {:<12} STATUS",
+        "NAME", "TYPE", "VERSION"
     );
     println!("{}", "-".repeat(56));
     for entry in entries {
@@ -212,7 +212,7 @@ mod tests {
             resource_type: None,
             project_dir: root.path(),
             json: false,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert!(result.resources.is_empty());
@@ -246,7 +246,7 @@ mod tests {
             resource_type: None,
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 4);
@@ -276,7 +276,7 @@ mod tests {
             resource_type: Some(ResourceType::Skill),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 1);
@@ -302,7 +302,7 @@ mod tests {
             resource_type: Some(ResourceType::Skill),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 1);
@@ -321,7 +321,7 @@ mod tests {
             resource_type: Some(ResourceType::Agent),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 1);
@@ -348,7 +348,7 @@ mod tests {
             resource_type: Some(ResourceType::Skill),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 1);
@@ -367,7 +367,7 @@ mod tests {
             resource_type: Some(ResourceType::Skill),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources[0].version, "");
@@ -386,7 +386,7 @@ mod tests {
             resource_type: Some(ResourceType::Agent),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 3);
@@ -405,7 +405,7 @@ mod tests {
             resource_type: Some(ResourceType::Agent),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert!(result.resources.is_empty());
@@ -440,7 +440,7 @@ mod tests {
             resource_type: Some(ResourceType::Skill),
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
         let result = run(&opts).unwrap();
         assert_eq!(result.resources.len(), 3);

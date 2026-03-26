@@ -11,7 +11,7 @@ pub struct InfoOpts<'a> {
     pub name: &'a str,
     pub project_dir: &'a Path,
     pub json: bool,
-    pub verbose: bool,
+    pub _verbose: bool,
 }
 
 /// Result of the info command.
@@ -52,7 +52,7 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
         .strip_prefix(opts.project_dir)
         .unwrap_or(&install_path)
         .to_string_lossy()
-        .to_string();
+        .replace('\\', "/");
 
     let result = InfoResult {
         name: opts.name.to_string(),
@@ -259,7 +259,7 @@ mod tests {
             name: "denden",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -283,7 +283,7 @@ mod tests {
             name: "debugger",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -307,7 +307,7 @@ mod tests {
             name: "deploy",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -332,7 +332,7 @@ mod tests {
             name: "no-console-log",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -350,7 +350,7 @@ mod tests {
             name: "nonexistent",
             project_dir: root.path(),
             json: false,
-            verbose: false,
+            _verbose: false,
         };
 
         let err = run(&opts).unwrap_err();
@@ -375,7 +375,7 @@ mod tests {
             name: "denden",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -394,7 +394,7 @@ mod tests {
             name: "denden",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -417,7 +417,7 @@ mod tests {
             name: "code-review",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -457,7 +457,7 @@ mod tests {
             name: "denden",
             project_dir: root.path(),
             json: true,
-            verbose: false,
+            _verbose: false,
         };
 
         let result = run(&opts).unwrap();
@@ -509,7 +509,7 @@ mod tests {
             name: "../../../etc",
             project_dir: root.path(),
             json: false,
-            verbose: false,
+            _verbose: false,
         };
 
         assert!(run(&opts).is_err());
