@@ -172,6 +172,15 @@ pub enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+
+    /// Validate a resource offline before publishing
+    Validate {
+        /// Resource type
+        resource_type: String,
+
+        /// Path to resource directory or file
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
