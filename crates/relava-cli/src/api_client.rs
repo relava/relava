@@ -179,6 +179,20 @@ impl ApiClient {
         self.get_json(&path)
     }
 
+    /// Search resources using full-text search, optionally filtered by type.
+    pub fn search_resources(
+        &self,
+        query: &str,
+        type_filter: Option<&str>,
+    ) -> Result<Vec<ResourceResponse>, ApiError> {
+        let encoded_query = urlencoding::encode(query);
+        let mut path = format!("/api/v1/resources?q={encoded_query}");
+        if let Some(t) = type_filter {
+            path.push_str(&format!("&type={}", urlencoding::encode(t)));
+        }
+        self.get_json(&path)
+    }
+
     /// Get a single resource by type and name.
     pub fn get_resource(
         &self,

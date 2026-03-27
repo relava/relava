@@ -40,7 +40,7 @@ fn version_from_row(row: &Row<'_>) -> rusqlite::Result<Version> {
 }
 
 /// Current schema version. Increment when adding migrations.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// SQLite-backed implementation of `ResourceStore`.
 pub struct SqliteResourceStore {
@@ -88,8 +88,9 @@ impl SqliteResourceStore {
             self.migrate_v1()?;
         }
 
-        // Future migrations go here:
-        // if current < 2 { self.migrate_v2()?; }
+        if current < 2 {
+            self.migrate_v2()?;
+        }
 
         if current < SCHEMA_VERSION {
             self.conn
@@ -146,6 +147,80 @@ impl SqliteResourceStore {
             .map_err(|e| StoreError::Database(format!("migration v1 failed: {e}")))?;
         Ok(())
     }
+
+    fn migrate_v2(&self) -> Result<(), StoreError> {
+        self.conn
+            .execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
+                    name,
+                    description,
+                    keywords,
+                    resource_type
+                );",
+            )
+            .map_err(|e| StoreError::Database(format!("migration v2 (FTS5) failed: {e}")))?;
+
+        // Clear any partial FTS data (idempotent re-run safety), then back-fill.
+        self.conn
+            .execute_batch("DELETE FROM resources_fts;")
+            .map_err(|e| StoreError::Database(format!("FTS5 cleanup failed: {e}")))?;
+
+        self.conn
+            .execute_batch(
+                "INSERT INTO resources_fts(rowid, name, description, keywords, resource_type)
+                 SELECT id, name, COALESCE(description, ''), '', type
+                 FROM resources;",
+            )
+            .map_err(|e| StoreError::Database(format!("FTS5 back-fill failed: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update the FTS index for a resource after publish or update.
+    fn update_fts_index(&self, resource_id: i64, resource: &Resource) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM resources_fts WHERE rowid = ?1", [resource_id])
+            .map_err(db_err)?;
+
+        let keywords = extract_keywords(resource.metadata_json.as_deref());
+
+        self.conn
+            .execute(
+                "INSERT INTO resources_fts(rowid, name, description, keywords, resource_type) VALUES(?1, ?2, ?3, ?4, ?5)",
+                (
+                    resource_id,
+                    &resource.name,
+                    resource.description.as_deref().unwrap_or(""),
+                    &keywords,
+                    &resource.resource_type,
+                ),
+            )
+            .map_err(db_err)?;
+
+        Ok(())
+    }
+}
+
+/// Extract keywords from a JSON metadata string.
+///
+/// Expects `{"keywords": ["foo", "bar"]}` and returns `"foo bar"`.
+fn extract_keywords(metadata_json: Option<&str>) -> String {
+    let Some(json) = metadata_json else {
+        return String::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return String::new();
+    };
+    value
+        .get("keywords")
+        .and_then(|k| k.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
 }
 
 impl ResourceStore for SqliteResourceStore {
@@ -232,14 +307,19 @@ impl ResourceStore for SqliteResourceStore {
             .map_err(db_err)?;
 
         let id = self.conn.last_insert_rowid();
-        self.conn
+        let created = self.conn
             .query_row(
                 "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
                  FROM resources WHERE id = ?1",
                 [id],
                 resource_from_row,
             )
-            .map_err(db_err)
+            .map_err(db_err)?;
+
+        // Add to FTS index.
+        self.update_fts_index(id, &created)?;
+
+        Ok(created)
     }
 
     fn delete_resource(
@@ -268,6 +348,11 @@ impl ResourceStore for SqliteResourceStore {
                     }
                     other => db_err(other),
                 })?;
+
+            // Remove from FTS index before deleting the resource.
+            self.conn
+                .execute("DELETE FROM resources_fts WHERE rowid = ?1", [resource_id])
+                .map_err(db_err)?;
 
             // Delete all versions first, then the resource.
             self.conn
@@ -396,6 +481,8 @@ impl ResourceStore for SqliteResourceStore {
                 other => db_err(other),
             })?;
 
+        self.update_fts_index(resource_id, resource)?;
+
         Ok(())
     }
 
@@ -404,26 +491,38 @@ impl ResourceStore for SqliteResourceStore {
         query: &str,
         resource_type: Option<ResourceType>,
     ) -> Result<Vec<Resource>, StoreError> {
-        let pattern = format!("%{query}%");
+        // Sanitize the query for FTS5: wrap each token in double quotes to
+        // prevent FTS syntax injection, append * for prefix matching, and
+        // combine with implicit AND.
+        let fts_query: String = query
+            .split_whitespace()
+            .map(|token| {
+                let escaped = token.replace('"', "\"\"");
+                format!("\"{escaped}\"*")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        if let Some(rt) = resource_type {
-            let rt_str = rt.to_string();
-            self.query_resources(
-                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
-                 FROM resources
-                 WHERE (name LIKE ?1 OR description LIKE ?1) AND type = ?2
-                 ORDER BY name",
-                &[&pattern as &dyn ToSql, &rt_str],
-            )
-        } else {
-            self.query_resources(
-                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
-                 FROM resources
-                 WHERE (name LIKE ?1 OR description LIKE ?1)
-                 ORDER BY name",
-                &[&pattern as &dyn ToSql],
-            )
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let mut sql = String::from(
+            "SELECT r.id, r.scope, r.name, r.type, r.description, r.latest_version, r.metadata_json, r.updated_at
+             FROM resources_fts f
+             JOIN resources r ON r.id = f.rowid
+             WHERE resources_fts MATCH ?1",
+        );
+        let mut params: Vec<&dyn ToSql> = vec![&fts_query];
+
+        let rt_str = resource_type.map(|rt| rt.to_string());
+        if let Some(ref rt) = rt_str {
+            sql.push_str(" AND r.type = ?2");
+            params.push(rt);
+        }
+
+        sql.push_str(" ORDER BY rank");
+        self.query_resources(&sql, &params)
     }
 }
 
@@ -587,6 +686,35 @@ mod tests {
         let store = test_store();
         let results = store.search("nonexistent", None).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_handles_fts_syntax_in_query() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+
+        // FTS5 operators should not cause parse errors.
+        let _ = store.search("OR AND NEAR", None).unwrap();
+        let _ = store.search("\"quoted\"", None).unwrap();
+        let _ = store.search("prefix*", None).unwrap();
+        let _ = store.search("den OR something", None).unwrap();
+    }
+
+    #[test]
+    fn search_by_keywords() {
+        let store = test_store();
+        let mut resource = sample_resource();
+        resource.metadata_json = Some(r#"{"keywords":["monitoring","alerting"]}"#.to_string());
+        store.publish(&resource, &sample_version("1.0.0")).unwrap();
+
+        let results = store.search("monitoring", None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "denden");
+
+        let results = store.search("alerting", None).unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

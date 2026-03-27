@@ -172,6 +172,8 @@ impl From<Version> for VersionResponse {
 struct ListQuery {
     #[serde(rename = "type")]
     resource_type: Option<String>,
+    /// Full-text search query. When present, returns ranked search results.
+    q: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -188,7 +190,10 @@ struct ResolveQuery {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// GET /api/v1/resources?type=skill
+/// GET /api/v1/resources?type=skill&q=search+term
+///
+/// When `q` is provided, performs a full-text search using FTS5 and returns
+/// ranked results. Otherwise lists all resources with optional type filter.
 async fn list_resources(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListQuery>,
@@ -205,7 +210,14 @@ async fn list_resources(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    match store.list_resources(rt) {
+
+    let result = if let Some(ref q) = query.q {
+        store.search(q, rt)
+    } else {
+        store.list_resources(rt)
+    };
+
+    match result {
         Ok(resources) => {
             let body: Vec<ResourceResponse> = resources.into_iter().map(Into::into).collect();
             Json(body).into_response()
@@ -1043,5 +1055,148 @@ mod tests {
         // Verify resource and versions are gone
         let resp = send(app, "GET", "/api/v1/resources/skill/denden", None).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- Search (FTS5) tests --
+
+    #[tokio::test]
+    async fn search_returns_matching_resources() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "code-review", "1.0.0", None);
+        publish(&store, "skill", "security-baseline", "0.5.0", None);
+
+        let app = app_with_store(store);
+
+        let resp = send(app, "GET", "/api/v1/resources?q=code", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let results = body.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"], "code-review");
+    }
+
+    #[tokio::test]
+    async fn search_with_type_filter() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "debugger", "1.0.0", None);
+        publish(&store, "agent", "debugger", "1.0.0", None);
+
+        let app = app_with_store(store);
+
+        // Search for "debugger" filtered to agents only
+        let resp = send(app, "GET", "/api/v1/resources?q=debugger&type=agent", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let results = body.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["type"], "agent");
+    }
+
+    #[tokio::test]
+    async fn search_no_results() {
+        let app = test_app();
+        let resp = send(app, "GET", "/api/v1/resources?q=nonexistent", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_by_description() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        let resource = crate::store::models::Resource {
+            id: 0,
+            scope: None,
+            name: "notify".to_string(),
+            resource_type: "skill".to_string(),
+            description: Some("Send notifications to Slack channels".to_string()),
+            latest_version: None,
+            metadata_json: None,
+            updated_at: None,
+        };
+        store
+            .publish(
+                &resource,
+                &crate::store::models::Version {
+                    id: 0,
+                    resource_id: 0,
+                    version: "1.0.0".to_string(),
+                    store_path: None,
+                    checksum: None,
+                    manifest_json: None,
+                    published_by: None,
+                    published_at: None,
+                },
+            )
+            .unwrap();
+
+        let app = app_with_store(store);
+        let resp = send(app, "GET", "/api/v1/resources?q=slack", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let results = body.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"], "notify");
+    }
+
+    #[tokio::test]
+    async fn search_deleted_resource_not_found() {
+        let app = test_app();
+        // Create, then delete
+        send(
+            app.clone(),
+            "POST",
+            "/api/v1/resources/skill/ephemeral",
+            Some(r#"{"description":"temporary"}"#),
+        )
+        .await;
+        send(
+            app.clone(),
+            "DELETE",
+            "/api/v1/resources/skill/ephemeral",
+            None,
+        )
+        .await;
+
+        // Search should not find the deleted resource
+        let resp = send(app, "GET", "/api/v1/resources?q=ephemeral", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_empty_query_returns_empty() {
+        let app = test_app();
+        send(
+            app.clone(),
+            "POST",
+            "/api/v1/resources/skill/denden",
+            Some(r#"{"description":"a skill"}"#),
+        )
+        .await;
+
+        let resp = send(app, "GET", "/api/v1/resources?q=", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_without_q_returns_all() {
+        let app = test_app();
+        send(
+            app.clone(),
+            "POST",
+            "/api/v1/resources/skill/denden",
+            Some(r#"{"description":"a skill"}"#),
+        )
+        .await;
+
+        // Without q param, should list all (not search)
+        let resp = send(app, "GET", "/api/v1/resources", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
     }
 }
