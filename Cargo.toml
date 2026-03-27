@@ -15,7 +15,7 @@ edition = "2024"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.34", features = ["bundled-full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

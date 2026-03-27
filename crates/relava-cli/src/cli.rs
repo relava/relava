@@ -92,6 +92,10 @@ pub enum Command {
     Search {
         /// Search query
         query: String,
+
+        /// Filter by resource type (skill, agent, command, rule)
+        #[arg(long, rename_all = "lowercase")]
+        r#type: Option<String>,
     },
 
     /// Update installed resources

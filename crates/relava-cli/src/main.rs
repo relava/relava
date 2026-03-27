@@ -17,6 +17,7 @@ mod registry;
 mod remove;
 mod resolver;
 mod save;
+mod search;
 mod server;
 mod tools;
 mod update;
@@ -281,8 +282,22 @@ fn main() {
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
-        Command::Search { query } => {
-            println!("relava search {query}");
+        Command::Search { query, r#type } => {
+            let opts = search::SearchOpts {
+                server_url: &cli.server,
+                query: &query,
+                resource_type: r#type.as_deref(),
+                json: cli.json,
+            };
+
+            match search::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
         Command::Update {
             resource_type,
