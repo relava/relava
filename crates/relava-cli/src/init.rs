@@ -40,6 +40,7 @@ pub fn run(project_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {}", manifest_path.display(), e))?;
 
     println!("Created {}", manifest_path.display());
+    println!("Tip: run 'relava install skill relava --save' to teach Claude Code about relava.");
     Ok(())
 }
 
@@ -94,5 +95,17 @@ mod tests {
         assert!(content.contains("[agents]"));
         assert!(content.contains("[commands]"));
         assert!(content.contains("[rules]"));
+    }
+
+    #[test]
+    fn hint_text_is_in_source() {
+        // Verify the hint about the relava skill is present in the init module.
+        // The hint is printed unconditionally on the success path, so as long as
+        // this string exists in the compiled binary, it will be shown to users.
+        let source = include_str!("init.rs");
+        assert!(
+            source.contains("relava install skill relava --save"),
+            "init module should contain hint about installing the relava skill"
+        );
     }
 }

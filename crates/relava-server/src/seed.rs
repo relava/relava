@@ -106,35 +106,7 @@ fn seed_one(
         ))
     })?;
 
-    // 3. Check existing resource
-    let is_reseed = match store.get_resource(None, bundled.name, bundled.resource_type) {
-        Ok(existing) => {
-            // Resource exists — compare versions
-            if let Some(ref latest) = existing.latest_version
-                && let Ok(registry_version) = Version::parse(latest)
-                && registry_version >= embedded_version
-            {
-                // Registry has same or newer version — skip
-                return Ok(());
-            }
-            false
-        }
-        Err(StoreError::NotFound(_)) => {
-            // Check if blob already exists (indicates re-seed after removal)
-            let blob_path = format!(
-                "{}/{}/{}/{}",
-                bundled.resource_type.store_dir_name(),
-                bundled.name,
-                version_str,
-                bundled.file_name
-            );
-            blob_store.exists(&blob_path).unwrap_or(false)
-        }
-        Err(e) => return Err(e),
-    };
-
-    // 4. Blob-first write with compensating transaction
-    let checksum = sha256_hex(bundled.content.as_bytes());
+    // 3. Pre-compute paths (used by both version check and blob write)
     let store_path = format!(
         "{}/{}/{}",
         bundled.resource_type.store_dir_name(),
@@ -143,27 +115,54 @@ fn seed_one(
     );
     let blob_path = format!("{store_path}/{}", bundled.file_name);
 
+    // 4. Check existing resource
+    let is_reseed = match store.get_resource(None, bundled.name, bundled.resource_type) {
+        Ok(existing) => {
+            // Resource exists — compare versions
+            if let Some(ref latest) = existing.latest_version {
+                if let Ok(registry_version) = Version::parse(latest)
+                    && registry_version >= embedded_version
+                {
+                    // Registry has same or newer version — skip
+                    return Ok(());
+                } else if Version::parse(latest).is_err() {
+                    eprintln!(
+                        "[relava-server] seed: cannot parse registry version '{latest}' for {}, re-seeding",
+                        bundled.name
+                    );
+                }
+            }
+            false
+        }
+        Err(StoreError::NotFound(_)) => {
+            // Check if blob already exists (indicates re-seed after removal)
+            blob_store.exists(&blob_path).unwrap_or(false)
+        }
+        Err(e) => return Err(e),
+    };
+
+    // 5. Blob-first write with compensating transaction
+    let checksum = sha256_hex(bundled.content.as_bytes());
+
     blob_store.store(&blob_path, bundled.content.as_bytes())?;
 
     let resource = models::Resource {
         id: 0,
         scope: None,
         name: bundled.name.to_string(),
-        resource_type: bundled
-            .resource_type
-            .store_dir_name()
-            .trim_end_matches('s')
-            .to_string(),
+        resource_type: bundled.resource_type.to_string(),
         description: Some(description),
         latest_version: None,
         metadata_json: None,
         updated_at: None,
     };
 
-    let manifest_json = serde_json::to_string(&serde_json::json!({
-        "files": [{ "path": bundled.file_name, "sha256": &checksum }]
-    }))
-    .ok();
+    let manifest_json = Some(
+        serde_json::to_string(&serde_json::json!({
+            "files": [{ "path": bundled.file_name, "sha256": &checksum }]
+        }))
+        .map_err(|e| StoreError::Database(format!("manifest serialization: {e}")))?,
+    );
 
     let version = models::Version {
         id: 0,
@@ -176,6 +175,7 @@ fn seed_one(
         published_at: None,
     };
 
+    // Publish (compensating delete on failure)
     match store.publish(&resource, &version) {
         Ok(()) => {}
         Err(StoreError::AlreadyExists(_)) => {
@@ -184,24 +184,25 @@ fn seed_one(
         }
         Err(e) => {
             // Compensating transaction: clean up the blob
-            let _ = blob_store.delete(&blob_path);
+            if let Err(cleanup_err) = blob_store.delete(&blob_path) {
+                eprintln!(
+                    "[relava-server] seed: failed to clean up blob {blob_path}: {cleanup_err}"
+                );
+            }
             return Err(e);
         }
     }
 
-    // 5. Logging
-    let type_name = bundled.resource_type.store_dir_name().trim_end_matches('s');
-    if is_reseed {
-        eprintln!(
-            "[relava-server] re-seeded default {type_name}: {}@{version_str} (previously removed)",
-            bundled.name
-        );
+    // 6. Logging
+    let suffix = if is_reseed {
+        " (previously removed)"
     } else {
-        eprintln!(
-            "[relava-server] seeded default {type_name}: {}@{version_str}",
-            bundled.name
-        );
-    }
+        ""
+    };
+    eprintln!(
+        "[relava-server] seeded default {}: {}@{version_str}{suffix}",
+        bundled.resource_type, bundled.name
+    );
 
     Ok(())
 }
