@@ -294,10 +294,7 @@ mod tests {
         };
 
         let err = run(&opts).unwrap_err();
-        assert!(
-            err.contains("Registry server not running"),
-            "got: {err}"
-        );
+        assert!(err.contains("Registry server not running"), "got: {err}");
         // Files should NOT be removed when server is unreachable
         assert!(skill_dir.exists());
     }

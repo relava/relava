@@ -285,10 +285,12 @@ mod tests {
         let client = ApiClient::new("http://127.0.0.1:19999");
         let result = client.get_resource("skill", "denden");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Registry server not running"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Registry server not running")
+        );
     }
 
     #[test]
@@ -296,10 +298,12 @@ mod tests {
         let client = ApiClient::new("http://127.0.0.1:19999");
         let result = client.health_check();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Registry server not running"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Registry server not running")
+        );
     }
 
     #[test]
@@ -307,10 +311,12 @@ mod tests {
         let client = ApiClient::new("http://127.0.0.1:19999");
         let result = client.delete_resource("skill", "denden");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Registry server not running"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Registry server not running")
+        );
     }
 
     #[test]
@@ -367,9 +373,7 @@ mod tests {
             .create();
 
         let client = ApiClient::new(&server.url());
-        let err = client
-            .create_resource("skill", "denden", None)
-            .unwrap_err();
+        let err = client.create_resource("skill", "denden", None).unwrap_err();
         assert!(matches!(err, ApiError::AlreadyExists(_)));
     }
 

@@ -81,7 +81,11 @@ pub fn run(opts: &ListOpts) -> Result<ListResult, String> {
         resources.extend(local_entries);
     }
 
-    resources.sort_by(|a, b| a.resource_type.cmp(&b.resource_type).then(a.name.cmp(&b.name)));
+    resources.sort_by(|a, b| {
+        a.resource_type
+            .cmp(&b.resource_type)
+            .then(a.name.cmp(&b.name))
+    });
 
     if !opts.json {
         if resources.is_empty() {
@@ -90,10 +94,8 @@ pub fn run(opts: &ListOpts) -> Result<ListResult, String> {
                     "No {}s found. Run `relava install {} <name>` to get started.",
                     rt, rt
                 ),
-                None => {
-                    "No resources found. Run `relava install <type> <name>` to get started."
-                        .to_string()
-                }
+                None => "No resources found. Run `relava install <type> <name>` to get started."
+                    .to_string(),
             };
             println!("{msg}");
         } else {
@@ -137,56 +139,58 @@ fn scan_local_only(
     // Active resources
     match std::fs::read_dir(&type_dir) {
         Err(e) => eprintln!("[warn] cannot read {}: {e}", type_dir.display()),
-        Ok(read_dir) => for entry in read_dir.flatten() {
-            let name = match extract_name(resource_type, &entry) {
-                Some(n) => n,
-                None => continue,
-            };
-            if already_listed(existing, &rt_str, &name) {
-                continue;
+        Ok(read_dir) => {
+            for entry in read_dir.flatten() {
+                let name = match extract_name(resource_type, &entry) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if already_listed(existing, &rt_str, &name) {
+                    continue;
+                }
+                if resource_type == ResourceType::Skill
+                    && !install::is_installed(project_dir, ResourceType::Skill, &name)
+                {
+                    continue;
+                }
+                let version = manifest_version(manifest, resource_type, &name).unwrap_or_default();
+                entries.push(ListEntry {
+                    name,
+                    resource_type: rt_str.clone(),
+                    version,
+                    status: "active".to_string(),
+                });
             }
-            if resource_type == ResourceType::Skill
-                && !install::is_installed(project_dir, ResourceType::Skill, &name)
-            {
-                continue;
-            }
-            let version = manifest_version(manifest, resource_type, &name).unwrap_or_default();
-            entries.push(ListEntry {
-                name,
-                resource_type: rt_str.clone(),
-                version,
-                status: "active".to_string(),
-            });
-        },
+        }
     }
 
     // Disabled resources
     let disabled_dir = disable::disabled_dir_for(project_dir, resource_type);
     if disabled_dir.is_dir() {
-    match std::fs::read_dir(&disabled_dir) {
-        Err(e) => eprintln!("[warn] cannot read {}: {e}", disabled_dir.display()),
-        Ok(read_dir) => {
-        for entry in read_dir.flatten() {
-            let name = match extract_name(resource_type, &entry) {
-                Some(n) => n,
-                None => continue,
-            };
-            if already_listed(existing, &rt_str, &name)
-                || already_listed(&entries, &rt_str, &name)
-            {
-                continue;
+        match std::fs::read_dir(&disabled_dir) {
+            Err(e) => eprintln!("[warn] cannot read {}: {e}", disabled_dir.display()),
+            Ok(read_dir) => {
+                for entry in read_dir.flatten() {
+                    let name = match extract_name(resource_type, &entry) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if already_listed(existing, &rt_str, &name)
+                        || already_listed(&entries, &rt_str, &name)
+                    {
+                        continue;
+                    }
+                    let version =
+                        manifest_version(manifest, resource_type, &name).unwrap_or_default();
+                    entries.push(ListEntry {
+                        name,
+                        resource_type: rt_str.clone(),
+                        version,
+                        status: "disabled".to_string(),
+                    });
+                }
             }
-            let version =
-                manifest_version(manifest, resource_type, &name).unwrap_or_default();
-            entries.push(ListEntry {
-                name,
-                resource_type: rt_str.clone(),
-                version,
-                status: "disabled".to_string(),
-            });
         }
-        },
-    }
     }
 
     entries
@@ -316,10 +320,7 @@ mod tests {
 
     #[test]
     fn manifest_version_returns_none_without_manifest() {
-        assert_eq!(
-            manifest_version(&None, ResourceType::Skill, "denden"),
-            None
-        );
+        assert_eq!(manifest_version(&None, ResourceType::Skill, "denden"), None);
     }
 
     #[test]
@@ -442,10 +443,7 @@ mod tests {
             _verbose: false,
         };
         let err = run(&opts).unwrap_err();
-        assert!(
-            err.contains("Registry server not running"),
-            "got: {err}"
-        );
+        assert!(err.contains("Registry server not running"), "got: {err}");
     }
 
     #[test]
@@ -463,10 +461,7 @@ mod tests {
             _verbose: false,
         };
         let err = run(&opts).unwrap_err();
-        assert!(
-            err.contains("Registry server not running"),
-            "got: {err}"
-        );
+        assert!(err.contains("Registry server not running"), "got: {err}");
     }
 
     #[test]
@@ -502,16 +497,32 @@ mod tests {
 
         let result = run(&opts).unwrap();
         // Should include: denden (server+local), remote-only (server), local-only (local)
-        assert!(result.resources.len() >= 3, "got {} resources", result.resources.len());
+        assert!(
+            result.resources.len() >= 3,
+            "got {} resources",
+            result.resources.len()
+        );
 
-        let denden = result.resources.iter().find(|r| r.name == "denden").unwrap();
+        let denden = result
+            .resources
+            .iter()
+            .find(|r| r.name == "denden")
+            .unwrap();
         assert_eq!(denden.status, "active"); // installed locally
         assert_eq!(denden.version, "2.0.0"); // from server
 
-        let remote = result.resources.iter().find(|r| r.name == "remote-only").unwrap();
+        let remote = result
+            .resources
+            .iter()
+            .find(|r| r.name == "remote-only")
+            .unwrap();
         assert_eq!(remote.status, "registered"); // not installed locally
 
-        let local = result.resources.iter().find(|r| r.name == "local-only").unwrap();
+        let local = result
+            .resources
+            .iter()
+            .find(|r| r.name == "local-only")
+            .unwrap();
         assert_eq!(local.status, "active"); // installed locally, not in server
     }
 }

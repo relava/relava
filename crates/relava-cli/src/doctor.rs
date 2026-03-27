@@ -425,7 +425,11 @@ mod tests {
 
         let registry_check = result.checks.iter().find(|c| c.name == "registry").unwrap();
         assert_eq!(registry_check.status, CheckStatus::Fail);
-        assert!(registry_check.message.contains("Registry server not running"));
+        assert!(
+            registry_check
+                .message
+                .contains("Registry server not running")
+        );
     }
 
     // -----------------------------------------------------------------------

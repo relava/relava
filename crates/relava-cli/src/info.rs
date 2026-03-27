@@ -73,7 +73,12 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
                 file_count,
                 total_size,
                 install_location,
-                status: if is_installed { "installed" } else { "registered" }.to_string(),
+                status: if is_installed {
+                    "installed"
+                } else {
+                    "registered"
+                }
+                .to_string(),
             }
         }
         Err(crate::api_client::ApiError::NotFound(_)) if is_installed => {
@@ -392,10 +397,7 @@ mod tests {
             _verbose: false,
         };
         let err = run(&opts).unwrap_err();
-        assert!(
-            err.contains("Registry server not running"),
-            "got: {err}"
-        );
+        assert!(err.contains("Registry server not running"), "got: {err}");
     }
 
     #[test]
@@ -418,10 +420,7 @@ mod tests {
             _verbose: false,
         };
         let err = run(&opts).unwrap_err();
-        assert!(
-            err.contains("Registry server not running"),
-            "got: {err}"
-        );
+        assert!(err.contains("Registry server not running"), "got: {err}");
     }
 
     #[test]

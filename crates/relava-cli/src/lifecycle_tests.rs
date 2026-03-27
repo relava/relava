@@ -188,7 +188,10 @@ fn install_resource(
 fn mock_server() -> mockito::ServerGuard {
     let mut server = mockito::Server::new();
     server
-        .mock("GET", mockito::Matcher::Regex(r"/api/v1/resources.*".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"/api/v1/resources.*".to_string()),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body("[]")
