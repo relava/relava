@@ -197,6 +197,25 @@ pub enum Command {
         /// Path to resource directory or file
         path: String,
     },
+
+    /// Manage the download cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CacheAction {
+    /// Remove cached downloads
+    Clean {
+        /// Only remove entries older than this duration (e.g. 30d, 12h, 45m)
+        #[arg(long)]
+        older_than: Option<String>,
+    },
+
+    /// Show cache disk usage and entry summary
+    Status,
 }
 
 #[derive(Subcommand)]
