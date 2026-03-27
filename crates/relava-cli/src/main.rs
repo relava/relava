@@ -20,6 +20,7 @@ mod remove;
 mod resolver;
 mod save;
 mod search;
+mod self_update;
 mod server;
 mod tools;
 mod update;
@@ -85,6 +86,12 @@ fn main() {
         if let Some(ref project) = cli.project {
             eprintln!("project: {}", project);
         }
+    }
+
+    // Blocking startup self-update check with interactive prompt (throttled to once per 24h).
+    // Suppressed by --json, --no-update-check, or non-TTY stdout.
+    if !cli.json && !cli.no_update_check {
+        self_update::startup_check();
     }
 
     match cli.command {
