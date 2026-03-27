@@ -1,0 +1,71 @@
+---
+title: "relava server"
+description: "Start, stop, and check the status of the registry server."
+---
+
+# relava server
+
+Manage the Relava registry server lifecycle. The server must be running for CLI commands that access the registry.
+
+## Commands
+
+### server start
+
+Start the registry server.
+
+```bash
+relava server start [--port <port>] [--daemon] [--gui-dir <dir>]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--port <port>` | Port to listen on | `7420` |
+| `--daemon` | Run as a background process | Foreground |
+| `--gui-dir <dir>` | Directory to serve static GUI files from | `~/.relava/gui/` |
+
+In daemon mode, the server runs in the background with logs written to `~/.relava/server.log`. A PID file is stored at `~/.relava/server.pid`.
+
+### server stop
+
+Stop the running server.
+
+```bash
+relava server stop
+```
+
+Sends `SIGTERM` to the server process and waits up to 5 seconds for graceful shutdown. Cleans up stale PID files automatically.
+
+### server status
+
+Check if the server is running.
+
+```bash
+relava server status [--json]
+```
+
+Shows whether the server is running, its PID, port, and uptime.
+
+## Examples
+
+```bash
+# Start as daemon on default port
+relava server start --daemon
+
+# Start on a custom port
+relava server start --port 8080
+
+# Check status
+relava server status
+
+# Stop the server
+relava server stop
+```
+
+## Web GUI
+
+When the server is running, visit `http://localhost:7420` in your browser to access the web GUI. The GUI provides:
+
+- **Dashboard** — overview with resource statistics
+- **Resource Browser** — search, filter, and sort resources
+- **Resource Detail** — view rendered markdown, version history, and dependencies
+- **Settings** — server status and cache management

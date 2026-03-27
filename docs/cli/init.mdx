@@ -1,0 +1,54 @@
+---
+title: "relava init"
+description: "Initialize a project with a relava.toml manifest file."
+---
+
+# relava init
+
+Initialize a new Relava project by creating a `relava.toml` manifest file in the current directory.
+
+## Usage
+
+```bash
+relava init
+```
+
+## What It Does
+
+Creates a `relava.toml` file with the default structure:
+
+```toml
+agent_type = "claude"
+
+[skills]
+
+[agents]
+
+[commands]
+
+[rules]
+```
+
+If a `relava.toml` already exists, the command exits with an error to avoid overwriting your configuration.
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output result as JSON |
+
+## Examples
+
+```bash
+# Initialize a new project
+cd my-project
+relava init
+
+# Then install resources with --save to populate the manifest
+relava install skill code-review --save
+```
+
+## Notes
+
+- The `agent_type` defaults to `"claude"`. Other platforms (`"codex"`, `"gemini"`) are planned for future releases.
+- The created file is meant to be committed to version control so collaborators can run `relava install relava.toml`.

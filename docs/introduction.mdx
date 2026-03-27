@@ -1,0 +1,80 @@
+---
+title: "What is Relava?"
+description: "A local package manager and registry for Claude Code resources — like npm but for AI coding assistant extensions."
+---
+
+# What is Relava?
+
+Relava is a **local package manager and registry** for Claude Code resources. It manages the prompt-layer artifacts that shape how Claude thinks and behaves: skills, agents, commands, and rules.
+
+Think `npm` or `brew`, but for Claude Code extensions — and everything runs locally on your machine.
+
+## The Problem
+
+Claude Code's extension model is file-based. Skills are directories, agents are `.md` files, commands are `.md` files, rules are `.md` files. There is no built-in package manager, no versioning, no dependency tracking, no discovery mechanism.
+
+Developers manually copy files between projects. There's no way to:
+
+- **Share** a useful skill with your team
+- **Version** your agents so you can roll back a bad change
+- **Declare** what resources a project needs in a single file
+- **Update** resources across projects when improvements land
+- **Discover** what resources exist
+
+## The Solution
+
+Relava solves this by treating Claude Code resources as first-class packages:
+
+<CardGroup cols={2}>
+  <Card title="Install & Manage" icon="download">
+    Install skills, agents, commands, and rules with a single CLI command. Remove, update, disable, and re-enable them just as easily.
+  </Card>
+  <Card title="Semantic Versioning" icon="code-branch">
+    Every resource is versioned with semver. Pin exact versions per project or use `"*"` for latest. Roll back anytime.
+  </Card>
+  <Card title="Dependency Resolution" icon="diagram-project">
+    Resources declare dependencies in frontmatter. Relava installs them transitively — install one skill, get everything it needs.
+  </Card>
+  <Card title="Declarative Manifest" icon="file-code">
+    `relava.toml` declares your project's resources. Commit it to version control so collaborators can reproduce your setup with one command.
+  </Card>
+  <Card title="Local Registry" icon="server">
+    A local HTTP server with REST API and web GUI for browsing, searching, and managing published resources.
+  </Card>
+  <Card title="Non-Invasive" icon="shield-halved">
+    Relava writes to standard `.claude/` locations. Remove Relava and your resources still work — they're just files.
+  </Card>
+</CardGroup>
+
+## Key Design Principles
+
+1. **Local-first.** Everything works offline. No account required. No cloud dependency.
+2. **Prompt-layer only.** Relava manages text and files that get injected into Claude's context. It does not manage infrastructure (MCP servers, runtimes, databases).
+3. **Non-invasive.** Relava writes files to standard Claude Code locations. If you uninstall Relava, your resources keep working.
+4. **Multi-file aware.** Skills can contain templates, libraries, and support files. Relava handles the full complexity.
+5. **Enterprise-ready.** REST-first architecture with storage abstraction traits. Switch from local to enterprise registry by changing one URL.
+
+## How It Works
+
+```
+CLI (relava) ──REST──> Registry Server (localhost:7420)
+     │                       │
+     │                  Resource Store (~/.relava/store/)
+     │                  SQLite Metadata DB
+     │                  Web GUI
+     v
+Project Filesystem (.claude/)
+```
+
+The **CLI** reads your project's `relava.toml`, fetches resources from the **registry server**, and writes files to your project's `.claude/` directory. The **web GUI** lets you browse and search the registry visually.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Install Relava and set up your first project in 2 minutes.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli/install">
+    Full reference for every CLI command.
+  </Card>
+</CardGroup>

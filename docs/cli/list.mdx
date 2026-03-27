@@ -1,0 +1,56 @@
+---
+title: "relava list"
+description: "List installed resources in the current project."
+---
+
+# relava list
+
+List resources installed in the current project.
+
+## Usage
+
+```bash
+# List all resources
+relava list
+
+# List by type
+relava list <type>
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Optional. Filter by resource type: `skill`, `agent`, `command`, or `rule` |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+
+## Examples
+
+```bash
+# List all installed resources
+relava list
+
+# List only skills
+relava list skill
+
+# List agents as JSON
+relava list agent --json
+```
+
+## Output
+
+Displays a formatted table with resource name, type, and installed version:
+
+```
+Type     Name              Version
+skill    denden            1.2.0
+skill    code-review       1.0.0
+agent    debugger          0.5.0
+command  commit            0.2.0
+rule     no-console-log    1.0.0
+```

@@ -1,0 +1,55 @@
+---
+title: "relava update"
+description: "Update installed resources to newer versions."
+---
+
+# relava update
+
+Update one or all installed resources to their latest available versions.
+
+## Usage
+
+```bash
+# Update a single resource
+relava update <type> <name>
+
+# Update all resources
+relava update --all
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--all` | Update all resources declared in `relava.toml` |
+| `--json` | Output results as JSON |
+
+## Examples
+
+### Update a single resource
+
+```bash
+relava update skill denden
+```
+
+Checks the registry for a newer version of `denden` and installs it if available. Updates the version pin in `relava.toml`.
+
+### Update everything
+
+```bash
+relava update --all
+```
+
+Iterates through all resources in `relava.toml` and updates each to the latest available version.
+
+## Version Pinning
+
+- Resources pinned with an exact version (e.g., `"1.2.0"`) are updated to the latest version, and the pin in `relava.toml` is updated to reflect the new version.
+- Resources pinned with `"*"` (latest) are always updated to the newest available version.

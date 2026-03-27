@@ -1,0 +1,41 @@
+---
+title: "relava info"
+description: "Show detailed information about an installed resource."
+---
+
+# relava info
+
+Display detailed information about a specific resource.
+
+## Usage
+
+```bash
+relava info <type> <name>
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+
+## Examples
+
+```bash
+# Show info about a skill
+relava info skill denden
+
+# Output as JSON for scripting
+relava info agent debugger --json
+```
+
+## Output
+
+Shows the resource name, type, installed version, description, file locations, and any declared dependencies.

@@ -1,0 +1,118 @@
+---
+title: "relava.toml"
+description: "The project manifest file — declare resources, pin versions, and configure your project."
+---
+
+# relava.toml
+
+The `relava.toml` file is the project manifest. It declares which resources your project uses and at what versions. Think of it as `package.json` for Claude Code resources.
+
+## Structure
+
+```toml
+agent_type = "claude"
+
+[skills]
+denden = "1.2.0"
+notify-slack = "*"
+
+[agents]
+debugger = "0.5.0"
+
+[commands]
+commit = "0.2.0"
+
+[rules]
+no-console-log = "1.0.0"
+```
+
+## Fields
+
+### agent_type
+
+```toml
+agent_type = "claude"
+```
+
+The target AI coding assistant platform. Determines install paths and resource format conventions.
+
+| Value | Status |
+|-------|--------|
+| `"claude"` | Supported (MVP) |
+| `"codex"` | Planned |
+| `"gemini"` | Planned |
+
+### Resource Sections
+
+Each resource type has its own TOML section: `[skills]`, `[agents]`, `[commands]`, `[rules]`.
+
+Entries are key-value pairs where the key is the resource name (slug) and the value is a version constraint:
+
+```toml
+[skills]
+denden = "1.2.0"         # exact version pin
+notify-slack = "*"        # latest available
+```
+
+## Version Constraints
+
+| Format | Meaning | Example |
+|--------|---------|---------|
+| `"X.Y.Z"` | Exact version pin | `"1.2.0"` |
+| `"*"` | Latest available version | `"*"` |
+
+When `--save` writes to `relava.toml`, it always pins the resolved exact version. For example, if `"*"` resolves to version `1.2.0`, the manifest is updated to `"1.2.0"`.
+
+<Note>
+  Running `relava update` on a resource with a `"*"` wildcard version will overwrite it with the exact resolved version pin. To keep using the latest version, you can manually edit the constraint back to `"*"` after updating.
+</Note>
+
+## Resource Name Format (Slugs)
+
+Resource names must follow the slug format:
+
+- **Length**: 1–64 characters
+- **Characters**: lowercase alphanumeric (`a-z`, `0-9`) and hyphens (`-`)
+- **Must start and end with**: a letter or digit (not a hyphen)
+- **No consecutive hyphens**
+
+Valid: `denden`, `notify-slack`, `code-review`, `my-skill-v2`
+
+Invalid: `-denden`, `Notify_Slack`, `code--review`, `my.skill`
+
+## Workflow
+
+### Creating
+
+```bash
+relava init
+```
+
+### Adding resources
+
+```bash
+# Automatically via --save
+relava install skill denden --save
+
+# Or edit by hand
+```
+
+### Installing from manifest
+
+```bash
+# Install everything declared in relava.toml
+relava install relava.toml
+```
+
+### Version control
+
+Commit `relava.toml` to your repository. Collaborators clone the project and run `relava install relava.toml` to get the exact same resource setup.
+
+## Lockfile
+
+Relava generates a `relava.lock` file alongside `relava.toml` that tracks:
+
+- Exact resolved versions for all resources (including transitive dependencies)
+- The full dependency graph
+
+The lockfile ensures reproducible installs across machines. Commit it to version control alongside `relava.toml`.

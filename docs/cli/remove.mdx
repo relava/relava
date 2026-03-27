@@ -1,0 +1,45 @@
+---
+title: "relava remove"
+description: "Remove an installed resource from the project."
+---
+
+# relava remove
+
+Remove a resource from your project's `.claude/` directory.
+
+## Usage
+
+```bash
+relava remove <type> <name> [--save]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--save` | Also remove the entry from `relava.toml` | Off |
+
+## Examples
+
+```bash
+# Remove a skill from the project
+relava remove skill denden
+
+# Remove and update the manifest
+relava remove skill denden --save
+```
+
+## Behavior
+
+- Sends a `DELETE` request to the server to remove the resource from the registry
+- Deletes the resource files from `.claude/` (e.g., `.claude/skills/denden/` for a skill)
+- With `--save`, also removes the entry from the corresponding section in `relava.toml`
+- Without `--save`, the entry remains in `relava.toml` — running `relava install relava.toml` will reinstall it
+- Does not remove transitive dependencies that were installed alongside the resource

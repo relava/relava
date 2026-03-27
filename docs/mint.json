@@ -1,0 +1,84 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Relava",
+  "colors": {
+    "primary": "#6D28D9",
+    "light": "#8B5CF6",
+    "dark": "#5B21B6",
+    "anchors": {
+      "from": "#6D28D9",
+      "to": "#4F46E5"
+    }
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url": "https://github.com/relava/relava"
+    }
+  ],
+  "topbarCtaButton": {
+    "name": "Get Started",
+    "url": "/quickstart"
+  },
+  "anchors": [
+    {
+      "name": "GitHub",
+      "icon": "github",
+      "url": "https://github.com/relava/relava"
+    },
+    {
+      "name": "CLI Reference",
+      "icon": "terminal",
+      "url": "/cli/install"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": ["introduction", "quickstart"]
+    },
+    {
+      "group": "CLI Reference",
+      "pages": [
+        "cli/init",
+        "cli/install",
+        "cli/remove",
+        "cli/update",
+        "cli/list",
+        "cli/info",
+        "cli/search",
+        "cli/publish",
+        "cli/import",
+        "cli/validate",
+        "cli/resolve",
+        "cli/disable-enable",
+        "cli/doctor",
+        "cli/cache",
+        "cli/server"
+      ]
+    },
+    {
+      "group": "Configuration",
+      "pages": [
+        "configuration/relava-toml",
+        "configuration/dependencies",
+        "configuration/global-options"
+      ]
+    },
+    {
+      "group": "Concepts",
+      "pages": [
+        "concepts/architecture",
+        "concepts/resources",
+        "concepts/registry"
+      ]
+    },
+    {
+      "group": "Enterprise",
+      "pages": ["enterprise/overview"]
+    }
+  ],
+  "footerSocials": {
+    "github": "https://github.com/relava/relava"
+  }
+}
