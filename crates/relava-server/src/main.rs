@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use relava_server::ServerConfig;
 use relava_server::store::RelavaDir;
 use tokio::net::TcpListener;
 
@@ -37,13 +38,21 @@ async fn main() -> ExitCode {
         .map(PathBuf::from)
         .unwrap_or_else(|_| relava_dir.gui_dir());
 
-    let app = match relava_server::app(&relava_dir.db_path(), Some(&gui_dir)) {
-        Ok(app) => app,
-        Err(e) => {
-            eprintln!("[relava-server] failed to open database: {e}");
-            return ExitCode::FAILURE;
-        }
+    let config = ServerConfig {
+        host: host.clone(),
+        port,
+        data_dir: relava_dir.root().to_path_buf(),
+        cache_dir: relava_dir.cache_dir(),
     };
+
+    let app =
+        match relava_server::app_with_config(&relava_dir.db_path(), Some(&gui_dir), Some(config)) {
+            Ok(app) => app,
+            Err(e) => {
+                eprintln!("[relava-server] failed to open database: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let addr = format!("{host}:{port}");
 

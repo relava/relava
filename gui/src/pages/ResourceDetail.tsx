@@ -105,8 +105,10 @@ export default function ResourceDetail() {
 
       {/* Header */}
       <div>
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-gray-900">{detail.name}</h1>
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 break-all">
+            {detail.name}
+          </h1>
           <span
             className={`rounded px-2 py-0.5 text-xs font-medium ${colorClass}`}
           >
@@ -156,13 +158,13 @@ export default function ResourceDetail() {
             {fileList.map((f) => (
               <div
                 key={f.path}
-                className="flex items-center justify-between py-2 px-1"
+                className="flex items-center justify-between gap-2 py-2 px-1"
               >
-                <span className="font-mono text-sm text-gray-900">
+                <span className="font-mono text-sm text-gray-900 truncate min-w-0">
                   {f.path}
                 </span>
                 <span
-                  className="font-mono text-xs text-gray-400"
+                  className="font-mono text-xs text-gray-400 shrink-0"
                   title={f.sha256}
                 >
                   {f.sha256.slice(0, 8)}…

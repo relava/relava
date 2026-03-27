@@ -3,24 +3,50 @@ pub mod routes;
 pub mod store;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use serde::Serialize;
 use tower_http::services::{ServeDir, ServeFile};
 
 use store::db::SqliteResourceStore;
+
+/// Server configuration exposed via `GET /config`.
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub data_dir: PathBuf,
+    pub cache_dir: PathBuf,
+}
 
 /// Shared application state available to all handlers.
 pub struct AppState {
     pub started_at: Instant,
     pub store: Mutex<SqliteResourceStore>,
     pub blob_store: Option<store::LocalBlobStore>,
+    pub config: Option<ServerConfig>,
+}
+
+/// Wire all API routes onto shared state, producing a router without static
+/// file serving. Used by both the real app builder and the test helpers to
+/// avoid duplicating the route table.
+fn api_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/stats", get(stats))
+        .route("/config", get(server_config))
+        .route("/cache/clean", post(clean_cache))
+        .nest("/api/v1", routes::resource_routes())
+        .with_state(state)
 }
 
 /// Build the Relava API router with shared state.
@@ -32,28 +58,35 @@ pub struct AppState {
 /// from it at `/` with SPA fallback (index.html for unmatched non-API routes).
 /// API routes always take priority over static file serving.
 pub fn app(db_path: &Path, gui_dir: Option<&Path>) -> Result<Router, store::StoreError> {
+    app_with_config(db_path, gui_dir, None)
+}
+
+/// Build the Relava API router with shared state and server configuration.
+///
+/// Like [`app`], but also stores server configuration for the `GET /config`
+/// endpoint.
+pub fn app_with_config(
+    db_path: &Path,
+    gui_dir: Option<&Path>,
+    config: Option<ServerConfig>,
+) -> Result<Router, store::StoreError> {
     let store = SqliteResourceStore::open(db_path)?;
 
     // Derive blob store root from db_path's parent (e.g., ~/.relava/store/)
     let blob_root = db_path
         .parent()
         .map(|p| p.join("store"))
-        .unwrap_or_else(|| std::path::PathBuf::from("store"));
+        .unwrap_or_else(|| PathBuf::from("store"));
     let blob_store = store::LocalBlobStore::new(blob_root);
 
     let state = Arc::new(AppState {
         started_at: Instant::now(),
         store: Mutex::new(store),
         blob_store: Some(blob_store),
+        config,
     });
 
-    let api_router = Router::new()
-        .route("/health", get(health))
-        .route("/stats", get(stats))
-        .nest("/api/v1", routes::resource_routes())
-        .with_state(state);
-
-    Ok(with_static_files(api_router, gui_dir))
+    Ok(with_static_files(api_router(state), gui_dir))
 }
 
 /// Wrap an API router with static file serving if the GUI directory exists.
@@ -95,33 +128,25 @@ pub fn app_in_memory_with_gui(gui_dir: Option<&Path>) -> Router {
         started_at: Instant::now(),
         store: Mutex::new(store),
         blob_store: None,
+        config: None,
     });
 
-    let api_router = Router::new()
-        .route("/health", get(health))
-        .route("/stats", get(stats))
-        .nest("/api/v1", routes::resource_routes())
-        .with_state(state);
-
-    with_static_files(api_router, gui_dir)
+    with_static_files(api_router(state), gui_dir)
 }
 
 /// Build a test router with an in-memory SQLite store and a temporary blob store.
 #[cfg(test)]
-pub fn app_with_blob_store(blob_root: std::path::PathBuf) -> Router {
+pub fn app_with_blob_store(blob_root: PathBuf) -> Router {
     let store = SqliteResourceStore::open_in_memory().unwrap();
     let blob_store = store::LocalBlobStore::new(blob_root);
     let state = Arc::new(AppState {
         started_at: Instant::now(),
         store: Mutex::new(store),
         blob_store: Some(blob_store),
+        config: None,
     });
 
-    Router::new()
-        .route("/health", get(health))
-        .route("/stats", get(stats))
-        .nest("/api/v1", routes::resource_routes())
-        .with_state(state)
+    api_router(state)
 }
 
 /// Response payload for `GET /health`.
@@ -199,6 +224,117 @@ async fn stats(State(state): State<Arc<AppState>>) -> axum::response::Response {
         Ok(stats) => Json(stats).into_response(),
         Err(msg) => {
             eprintln!("[relava-server] stats error: {msg}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Response payload for `GET /config`.
+#[derive(Debug, Serialize)]
+struct ConfigResponse {
+    host: String,
+    port: u16,
+    data_dir: String,
+    cache_dir: String,
+    cache_size_bytes: u64,
+}
+
+/// Recursively sum file sizes under `path`. Returns 0 if the directory does
+/// not exist or is unreadable.
+fn dir_size_bytes(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size_bytes(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// Server configuration endpoint returning host, port, data directory, cache
+/// directory, and cache size.
+async fn server_config(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let Some(ref cfg) = state.config else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "server config not available"})),
+        )
+            .into_response();
+    };
+
+    let cache_path = cfg.cache_dir.clone();
+    let cache_size_bytes = tokio::task::spawn_blocking(move || dir_size_bytes(&cache_path))
+        .await
+        .unwrap_or(0);
+
+    Json(ConfigResponse {
+        host: cfg.host.clone(),
+        port: cfg.port,
+        data_dir: cfg.data_dir.display().to_string(),
+        cache_dir: cfg.cache_dir.display().to_string(),
+        cache_size_bytes,
+    })
+    .into_response()
+}
+
+/// Clean the cache directory by removing all its contents.
+async fn clean_cache(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let Some(ref cfg) = state.config else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "server config not available"})),
+        )
+            .into_response();
+    };
+
+    let cache_dir = cfg.cache_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if !cache_dir.is_dir() {
+            return Ok(0u64);
+        }
+
+        let size_before = dir_size_bytes(&cache_dir);
+
+        // Remove all entries inside the cache directory (but keep the directory itself).
+        std::fs::read_dir(&cache_dir).and_then(|entries| {
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path)?;
+                } else {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+            Ok(size_before)
+        })
+    })
+    .await;
+
+    match result {
+        Ok(Ok(freed_bytes)) => Json(serde_json::json!({
+            "cleaned": true,
+            "freed_bytes": freed_bytes,
+        }))
+        .into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[relava-server] cache clean error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("failed to clean cache: {e}")})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("[relava-server] cache clean task panicked: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal server error"})),
@@ -357,6 +493,7 @@ mod tests {
             started_at: Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
 
         let app = Router::new()
@@ -402,6 +539,7 @@ mod tests {
             started_at: Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
 
         // Poison the mutex by panicking while holding the lock.
@@ -442,6 +580,7 @@ mod tests {
             started_at: Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
 
         // Poison the mutex.
@@ -641,5 +780,204 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
             "missing index.html should not cause 500"
         );
+    }
+
+    // -- Config endpoint tests --
+
+    /// Helper to build a test app with a specific ServerConfig.
+    fn app_with_server_config(config: Option<ServerConfig>) -> Router {
+        let store = store::db::SqliteResourceStore::open_in_memory().unwrap();
+        let state = Arc::new(AppState {
+            started_at: Instant::now(),
+            store: Mutex::new(store),
+            blob_store: None,
+            config,
+        });
+
+        Router::new()
+            .route("/config", axum::routing::get(server_config))
+            .route("/cache/clean", axum::routing::post(clean_cache))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn config_returns_503_when_no_config() {
+        let app = app_with_server_config(None);
+        let resp = get_from(app, "/config").await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = json_body(resp).await;
+        assert!(json["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn config_returns_server_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        // Put a 100-byte file in the cache to verify size calculation
+        std::fs::write(cache_dir.join("test.bin"), &[0u8; 100]).unwrap();
+
+        let config = ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 7420,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir: cache_dir.clone(),
+        };
+        let app = app_with_server_config(Some(config));
+        let resp = get_from(app, "/config").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert_eq!(json["host"], "127.0.0.1");
+        assert_eq!(json["port"], 7420);
+        assert_eq!(json["data_dir"], tmp.path().display().to_string());
+        assert_eq!(json["cache_dir"], cache_dir.display().to_string());
+        assert_eq!(json["cache_size_bytes"], 100);
+    }
+
+    #[tokio::test]
+    async fn config_cache_size_zero_when_dir_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let config = ServerConfig {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir,
+        };
+        let app = app_with_server_config(Some(config));
+        let json = json_body(get_from(app, "/config").await).await;
+        assert_eq!(json["cache_size_bytes"], 0);
+    }
+
+    #[tokio::test]
+    async fn config_cache_size_sums_nested_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let sub = cache_dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(cache_dir.join("a.bin"), &[0u8; 50]).unwrap();
+        std::fs::write(sub.join("b.bin"), &[0u8; 75]).unwrap();
+
+        let config = ServerConfig {
+            host: "localhost".to_string(),
+            port: 7420,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir,
+        };
+        let app = app_with_server_config(Some(config));
+        let json = json_body(get_from(app, "/config").await).await;
+        assert_eq!(json["cache_size_bytes"], 125);
+    }
+
+    #[tokio::test]
+    async fn config_cache_size_zero_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ServerConfig {
+            host: "localhost".to_string(),
+            port: 7420,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir: tmp.path().join("nonexistent-cache"),
+        };
+        let app = app_with_server_config(Some(config));
+        let json = json_body(get_from(app, "/config").await).await;
+        assert_eq!(json["cache_size_bytes"], 0);
+    }
+
+    // -- Cache clean endpoint tests --
+
+    /// Send a POST request to the given URI and return the response.
+    async fn post_to(app: Router, uri: &str) -> axum::response::Response {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn clean_cache_returns_503_when_no_config() {
+        let app = app_with_server_config(None);
+        let resp = post_to(app, "/cache/clean").await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = json_body(resp).await;
+        assert!(json["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn clean_cache_succeeds_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ServerConfig {
+            host: "localhost".to_string(),
+            port: 7420,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir: tmp.path().join("nonexistent"),
+        };
+        let app = app_with_server_config(Some(config));
+        let resp = post_to(app, "/cache/clean").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert_eq!(json["cleaned"], true);
+        assert_eq!(json["freed_bytes"], 0);
+    }
+
+    #[tokio::test]
+    async fn clean_cache_removes_files_and_reports_freed_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let sub = cache_dir.join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(cache_dir.join("a.bin"), &[0u8; 200]).unwrap();
+        std::fs::write(sub.join("b.bin"), &[0u8; 300]).unwrap();
+
+        let config = ServerConfig {
+            host: "localhost".to_string(),
+            port: 7420,
+            data_dir: tmp.path().to_path_buf(),
+            cache_dir: cache_dir.clone(),
+        };
+        let app = app_with_server_config(Some(config));
+        let resp = post_to(app, "/cache/clean").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert_eq!(json["cleaned"], true);
+        assert_eq!(json["freed_bytes"], 500);
+
+        // Verify the cache directory still exists but is empty
+        assert!(cache_dir.is_dir(), "cache dir should still exist");
+        let entries: Vec<_> = std::fs::read_dir(&cache_dir).unwrap().collect();
+        assert!(entries.is_empty(), "cache dir should be empty after clean");
+    }
+
+    // -- dir_size_bytes unit tests --
+
+    #[test]
+    fn dir_size_bytes_nonexistent_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        assert_eq!(dir_size_bytes(&missing), 0);
+    }
+
+    #[test]
+    fn dir_size_bytes_empty_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size_bytes(tmp.path()), 0);
+    }
+
+    #[test]
+    fn dir_size_bytes_sums_files_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(tmp.path().join("f1"), &[1u8; 40]).unwrap();
+        std::fs::write(sub.join("f2"), &[2u8; 60]).unwrap();
+        assert_eq!(dir_size_bytes(tmp.path()), 100);
     }
 }

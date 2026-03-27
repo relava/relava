@@ -7,8 +7,8 @@
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? '';
 
-async function request<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`);
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${BASE_URL}${path}`, options);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const message = body?.error ?? `Request failed: ${response.status}`;
@@ -33,6 +33,19 @@ export interface StatsResponse {
   resource_counts_by_type: Record<string, number>;
   version_count: number;
   database_size_bytes: number;
+}
+
+export interface ConfigResponse {
+  host: string;
+  port: number;
+  data_dir: string;
+  cache_dir: string;
+  cache_size_bytes: number;
+}
+
+export interface CleanCacheResponse {
+  cleaned: boolean;
+  freed_bytes: number;
 }
 
 export interface Resource {
@@ -80,6 +93,14 @@ export function fetchHealth(): Promise<HealthResponse> {
 
 export function fetchStats(): Promise<StatsResponse> {
   return request<StatsResponse>('/stats');
+}
+
+export function fetchConfig(): Promise<ConfigResponse> {
+  return request<ConfigResponse>('/config');
+}
+
+export function cleanCache(): Promise<CleanCacheResponse> {
+  return request<CleanCacheResponse>('/cache/clean', { method: 'POST' });
 }
 
 export function fetchResources(type?: string): Promise<Resource[]> {
