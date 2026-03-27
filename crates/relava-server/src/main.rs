@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use relava_server::store::RelavaDir;
@@ -31,7 +32,12 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let app = match relava_server::app(&relava_dir.db_path()) {
+    // Determine GUI directory: RELAVA_GUI_DIR env var overrides the default.
+    let gui_dir = std::env::var("RELAVA_GUI_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| relava_dir.gui_dir());
+
+    let app = match relava_server::app(&relava_dir.db_path(), Some(&gui_dir)) {
         Ok(app) => app,
         Err(e) => {
             eprintln!("[relava-server] failed to open database: {e}");

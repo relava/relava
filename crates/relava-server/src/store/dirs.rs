@@ -14,6 +14,7 @@ use relava_types::validate::ResourceType;
 ///     commands/<name>/<version>/
 ///     rules/<name>/<version>/
 ///   cache/
+///   gui/
 ///   logs/
 /// ```
 pub struct RelavaDir {
@@ -60,6 +61,11 @@ impl RelavaDir {
     /// Path to the `logs/` directory.
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
+    }
+
+    /// Path to the `gui/` directory (static web assets for the GUI).
+    pub fn gui_dir(&self) -> PathBuf {
+        self.root.join("gui")
     }
 
     /// Path to a resource type directory, e.g. `store/skills/`.

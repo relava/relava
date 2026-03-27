@@ -198,6 +198,10 @@ pub enum ServerAction {
         /// Run as background daemon
         #[arg(long)]
         daemon: bool,
+
+        /// Directory to serve static GUI files from (default: ~/.relava/gui/)
+        #[arg(long)]
+        gui_dir: Option<String>,
     },
 
     /// Stop the running server
