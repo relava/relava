@@ -414,31 +414,31 @@ async fn get_version_checksums(
     };
 
     // Parse per-file checksums from manifest_json, propagating corrupt data as 500.
+    let log_and_500 = |detail: &str, err: &dyn std::fmt::Display| -> Response {
+        let label = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {detail}")
+        };
+        eprintln!(
+            "[relava-server] corrupt manifest_json{label} for {rtype}/{name}@{version}: {err}"
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("internal server error")),
+        )
+            .into_response()
+    };
+
     let parsed: serde_json::Value = match serde_json::from_str(manifest_str) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("[relava-server] corrupt manifest_json for {rtype}/{name}@{version}: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError::new("internal server error")),
-            )
-                .into_response();
-        }
+        Err(e) => return log_and_500("", &e),
     };
 
     let files_val = parsed.get("files").cloned().unwrap_or_default();
     let files: Vec<FileChecksumEntry> = match serde_json::from_value(files_val) {
         Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "[relava-server] corrupt manifest_json files for {rtype}/{name}@{version}: {e}"
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError::new("internal server error")),
-            )
-                .into_response();
-        }
+        Err(e) => return log_and_500("files", &e),
     };
 
     Json(ChecksumsResponse {

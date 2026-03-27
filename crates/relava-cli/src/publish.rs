@@ -76,11 +76,24 @@ pub struct FileEntry {
 // ---------------------------------------------------------------------------
 
 /// Category of change for a file between local and registry versions.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Variant declaration order matches the desired display order:
+/// added → modified → removed. The derived `Ord` relies on this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ChangeKind {
     Added,
     Modified,
     Removed,
+}
+
+impl std::fmt::Display for ChangeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeKind::Added => write!(f, "added"),
+            ChangeKind::Modified => write!(f, "modified"),
+            ChangeKind::Removed => write!(f, "removed"),
+        }
+    }
 }
 
 /// A single file change detected between local and registry.
@@ -130,17 +143,9 @@ fn detect_changes(
         }
     }
 
-    // Sort for deterministic output: added, modified, removed, then by path
-    changes.sort_by(|a, b| {
-        let order = |k: &ChangeKind| match k {
-            ChangeKind::Added => 0,
-            ChangeKind::Modified => 1,
-            ChangeKind::Removed => 2,
-        };
-        order(&a.kind)
-            .cmp(&order(&b.kind))
-            .then(a.path.cmp(&b.path))
-    });
+    // Sort for deterministic output: added, modified, removed, then by path.
+    // ChangeKind's derived Ord matches this order.
+    changes.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.path.cmp(&b.path)));
 
     changes
 }
@@ -148,12 +153,7 @@ fn detect_changes(
 /// Print a diff summary to stdout.
 fn print_diff_summary(changes: &[FileChange]) {
     for change in changes {
-        let tag = match change.kind {
-            ChangeKind::Added => "added",
-            ChangeKind::Modified => "modified",
-            ChangeKind::Removed => "removed",
-        };
-        println!("  [{tag:<8}] {}", change.path);
+        println!("  [{:<8}] {}", change.kind, change.path);
     }
 }
 
