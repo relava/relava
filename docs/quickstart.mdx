@@ -7,13 +7,27 @@ description: "Install Relava, start the registry server, and install your first 
 
 ## 1. Install Relava
 
-Install the Relava CLI from source using Cargo:
+Install the Relava CLI using the install script:
 
-```bash
-cargo install --path crates/relava-cli
-```
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/relava/relava/main/scripts/install.sh | sh
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    irm https://raw.githubusercontent.com/relava/relava/main/scripts/install.ps1 | iex
+    ```
+  </Tab>
+  <Tab title="Cargo">
+    ```bash
+    cargo install relava
+    ```
+  </Tab>
+</Tabs>
 
-This installs the `relava` binary to your Cargo bin directory (typically `~/.cargo/bin/`).
+See the [Installation](/installation) page for more options and details.
 
 ## 2. Start the Registry Server
 

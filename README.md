@@ -24,10 +24,37 @@ Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `n
 - **Multi-platform** -- `agent_type` field supports Claude Code (MVP), with Codex and Gemini CLI planned
 - **Registry server** -- local HTTP server with REST API, web GUI for browsing, and SQLite metadata
 - **Non-invasive** -- writes to standard `.claude/` locations; remove Relava and your resources still work
-- **Auto-update notifications** -- checks for newer resource versions after commands, with GUI badge
-- **Self-updating CLI** -- automatic startup check for new CLI versions with interactive upgrade prompt
-- **Cache management** -- `relava cache clean` and `relava cache status` for download cache control
 - **Enterprise-ready architecture** -- REST-first design, storage abstraction traits, future support for SSO, scoping, and registry federation
+
+## Installation
+
+### Quick install (recommended)
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/relava/relava/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/relava/relava/main/scripts/install.ps1 | iex
+```
+
+### Install via Cargo
+
+```bash
+cargo install relava
+```
+
+### Manual download
+
+Download pre-built binaries from [GitHub Releases](https://github.com/relava/relava/releases). Available for:
+
+- Linux (x86_64, aarch64)
+- macOS (x86_64, Apple Silicon)
+- Windows (x86_64)
 
 ## Quick Start
 
@@ -67,10 +94,6 @@ relava resolve skill denden
 # Disable/enable resources
 relava disable skill denden
 relava enable skill denden
-
-# Cache management
-relava cache status
-relava cache clean --older-than 7d
 
 # Cache management
 relava cache status

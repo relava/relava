@@ -1,0 +1,110 @@
+---
+title: "Installation"
+description: "Install the Relava CLI on macOS, Linux, or Windows."
+---
+
+# Installation
+
+## Quick install (recommended)
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/relava/relava/main/scripts/install.sh | sh
+    ```
+
+    This downloads the latest release binary and installs it to `~/.relava/bin`.
+    The script auto-detects your OS and architecture.
+
+    **Supported platforms:** macOS (x86_64, Apple Silicon), Linux (x86_64, aarch64)
+
+    **Environment variables:**
+
+    | Variable | Description | Default |
+    |----------|-------------|---------|
+    | `RELAVA_INSTALL_DIR` | Override install directory | `~/.relava/bin` |
+    | `RELAVA_VERSION` | Install a specific version (e.g., `v0.1.0`) | latest |
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    irm https://raw.githubusercontent.com/relava/relava/main/scripts/install.ps1 | iex
+    ```
+
+    This downloads the latest release binary and installs it to `%LOCALAPPDATA%\relava\bin`.
+
+    **Supported platforms:** Windows (x86_64)
+
+    **Environment variables:**
+
+    | Variable | Description | Default |
+    |----------|-------------|---------|
+    | `RELAVA_INSTALL_DIR` | Override install directory | `%LOCALAPPDATA%\relava\bin` |
+    | `RELAVA_VERSION` | Install a specific version (e.g., `v0.1.0`) | latest |
+  </Tab>
+</Tabs>
+
+## Install via Cargo
+
+If you have [Rust](https://www.rust-lang.org/tools/install) installed:
+
+```bash
+cargo install relava
+```
+
+This builds from source and installs the `relava` binary to `~/.cargo/bin/`.
+
+## Manual download
+
+Download pre-built binaries from the [GitHub Releases](https://github.com/relava/relava/releases) page.
+
+Available targets:
+
+| Platform | Architecture | Archive |
+|----------|-------------|---------|
+| Linux | x86_64 | `relava-{version}-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux | aarch64 | `relava-{version}-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS | x86_64 (Intel) | `relava-{version}-x86_64-apple-darwin.tar.gz` |
+| macOS | aarch64 (Apple Silicon) | `relava-{version}-aarch64-apple-darwin.tar.gz` |
+| Windows | x86_64 | `relava-{version}-x86_64-pc-windows-msvc.zip` |
+
+After downloading, extract the archive and move the binary to a directory in your `PATH`.
+
+## Verify installation
+
+```bash
+relava --version
+```
+
+## Updating
+
+To update to the latest version, re-run the install script or use:
+
+```bash
+cargo install relava
+```
+
+Relava also checks for updates automatically and will notify you when a new version is available.
+
+## Uninstalling
+
+Remove the binary and its data directory:
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    rm ~/.relava/bin/relava
+    rm -rf ~/.relava
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    Remove-Item "$env:LOCALAPPDATA\relava" -Recurse -Force
+    ```
+  </Tab>
+</Tabs>
+
+If you installed via Cargo:
+
+```bash
+cargo uninstall relava
+```

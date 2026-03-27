@@ -22,7 +22,7 @@
     "groups": [
       {
         "group": "Getting Started",
-        "pages": ["introduction", "quickstart"]
+        "pages": ["introduction", "installation", "quickstart"]
       },
       {
         "group": "CLI Reference",
