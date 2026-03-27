@@ -1,3 +1,4 @@
+mod api_client;
 mod bulk_install;
 mod cache;
 mod cli;
@@ -198,6 +199,7 @@ fn main() {
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = remove::RemoveOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 name: &name,
                 project_dir: &project_dir,
@@ -236,6 +238,7 @@ fn main() {
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = list::ListOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 project_dir: &project_dir,
                 json: cli.json,
@@ -261,6 +264,7 @@ fn main() {
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = info::InfoOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 name: &name,
                 project_dir: &project_dir,
@@ -409,6 +413,7 @@ fn main() {
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = disable::DisableOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 name: &name,
                 project_dir: &project_dir,
@@ -435,6 +440,7 @@ fn main() {
             let project_dir = resolve_project_dir(cli.project.as_deref());
 
             let opts = enable::EnableOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 name: &name,
                 project_dir: &project_dir,
@@ -485,6 +491,7 @@ fn main() {
                 .unwrap_or_else(|e| exit_with_error(&e, cli.json));
 
             let opts = validate::ValidateOpts {
+                server_url: &cli.server,
                 resource_type: rt,
                 path: std::path::Path::new(&path),
                 json: cli.json,

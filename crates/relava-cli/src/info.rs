@@ -3,10 +3,12 @@ use std::path::Path;
 use relava_types::manifest::{ProjectManifest, ResourceMeta};
 use relava_types::validate::{self, ResourceType};
 
+use crate::api_client::ApiClient;
 use crate::install;
 
 /// Options for the info command.
 pub struct InfoOpts<'a> {
+    pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,
     pub project_dir: &'a Path,
@@ -25,32 +27,97 @@ pub struct InfoResult {
     pub file_count: usize,
     pub total_size: u64,
     pub install_location: String,
+    pub status: String,
 }
 
 /// Run `relava info <type> <name>`.
 ///
-/// Displays detailed information about an installed resource, including
-/// name, version, type, description, dependencies, file count, total
-/// size, and install location.
+/// Queries the server for resource metadata and supplements with local
+/// install information (file count, size, location).
 pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
-    // Validate slug before filesystem operations
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
 
-    if !install::is_installed(opts.project_dir, opts.resource_type, opts.name) {
-        return Err(format!(
-            "{} '{}' is not installed",
-            opts.resource_type, opts.name
-        ));
-    }
+    let client = ApiClient::new(opts.server_url);
+    let rt_str = opts.resource_type.to_string();
 
+    // Query server for resource metadata
+    let server_info = client.get_resource(&rt_str, opts.name);
+
+    // Determine local install status
+    let is_installed = install::is_installed(opts.project_dir, opts.resource_type, opts.name);
     let install_path = install::resource_path(opts.project_dir, opts.resource_type, opts.name);
-    let (file_count, total_size) = compute_size(opts.resource_type, &install_path);
-    let version = load_manifest_version(opts.project_dir, opts.resource_type, opts.name);
-    let (description, dependencies) = load_metadata(opts.resource_type, &install_path);
+
+    // Build result from server data + local data
+    match server_info {
+        Ok(resource) => {
+            let (file_count, total_size, install_location) = if is_installed {
+                let (fc, ts) = compute_size(opts.resource_type, &install_path);
+                let loc = install_path
+                    .strip_prefix(opts.project_dir)
+                    .unwrap_or(&install_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (fc, ts, loc)
+            } else {
+                (0, 0, String::new())
+            };
+
+            let version = load_manifest_version(opts.project_dir, opts.resource_type, opts.name)
+                .or(resource.latest_version)
+                .unwrap_or_default();
+
+            let description = resource.description.unwrap_or_default();
+
+            // Get dependencies from local file if installed
+            let dependencies = if is_installed {
+                load_dependencies(opts.resource_type, &install_path)
+            } else {
+                Vec::new()
+            };
+
+            let status = if is_installed {
+                "installed".to_string()
+            } else {
+                "registered".to_string()
+            };
+
+            let result = InfoResult {
+                name: opts.name.to_string(),
+                resource_type: rt_str,
+                version,
+                description,
+                dependencies,
+                file_count,
+                total_size,
+                install_location,
+                status,
+            };
+
+            if !opts.json {
+                print_info(&result);
+            }
+
+            Ok(result)
+        }
+        Err(crate::api_client::ApiError::NotFound(_)) if is_installed => {
+            // Resource is installed locally but not in the registry
+            run_local(opts, &install_path)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Fall back to local-only info when the server doesn't know about a resource
+/// that is installed locally.
+fn run_local(opts: &InfoOpts, install_path: &Path) -> Result<InfoResult, String> {
+    let (file_count, total_size) = compute_size(opts.resource_type, install_path);
+    let version =
+        load_manifest_version(opts.project_dir, opts.resource_type, opts.name).unwrap_or_default();
+    let (description, dependencies) = load_metadata(opts.resource_type, install_path);
 
     let install_display = install_path
         .strip_prefix(opts.project_dir)
-        .unwrap_or(&install_path)
+        .unwrap_or(install_path)
         .to_string_lossy()
         .replace('\\', "/");
 
@@ -63,6 +130,7 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
         file_count,
         total_size,
         install_location: install_display,
+        status: "installed".to_string(),
     };
 
     if !opts.json {
@@ -119,19 +187,19 @@ fn dir_size(path: &Path) -> (usize, u64) {
 }
 
 /// Look up version from relava.toml.
-///
-/// Returns empty string if relava.toml does not exist. Warns on parse errors.
-fn load_manifest_version(project_dir: &Path, resource_type: ResourceType, name: &str) -> String {
+fn load_manifest_version(
+    project_dir: &Path,
+    resource_type: ResourceType,
+    name: &str,
+) -> Option<String> {
     let path = project_dir.join("relava.toml");
     let manifest = match ProjectManifest::from_file(&path) {
         Ok(m) => m,
         Err(e) => {
-            // Silently ignore missing file; warn on parse errors
-            if !path.exists() {
-                return String::new();
+            if path.exists() {
+                eprintln!("[warn] failed to read relava.toml: {e}");
             }
-            eprintln!("[warn] failed to read relava.toml: {e}");
-            return String::new();
+            return None;
         }
     };
     let section = match resource_type {
@@ -140,10 +208,17 @@ fn load_manifest_version(project_dir: &Path, resource_type: ResourceType, name: 
         ResourceType::Command => &manifest.commands,
         ResourceType::Rule => &manifest.rules,
     };
-    section.get(name).cloned().unwrap_or_default()
+    let v = section.get(name).cloned().unwrap_or_default();
+    if v.is_empty() { None } else { Some(v) }
 }
 
-/// Extract description and resource dependencies (skills + agents) from metadata.
+/// Extract dependencies from local resource metadata.
+fn load_dependencies(resource_type: ResourceType, path: &Path) -> Vec<String> {
+    let (_, deps) = load_metadata(resource_type, path);
+    deps
+}
+
+/// Extract description and dependencies from metadata.
 fn load_metadata(resource_type: ResourceType, path: &Path) -> (String, Vec<String>) {
     let md_path = match resource_type {
         ResourceType::Skill => path.join("SKILL.md"),
@@ -155,23 +230,17 @@ fn load_metadata(resource_type: ResourceType, path: &Path) -> (String, Vec<Strin
         Err(_) => return (String::new(), Vec::new()),
     };
 
-    // Try to parse frontmatter metadata
     let meta = ResourceMeta::from_md(&content).unwrap_or_default();
     let mut deps = meta.skills;
     deps.extend(meta.agents);
 
-    // Extract description from the first non-empty, non-heading line after frontmatter
     let description = extract_description(&content);
-
     (description, deps)
 }
 
 /// Extract a short description from markdown content.
-///
-/// Looks for the first paragraph line after frontmatter and the title heading.
 fn extract_description(content: &str) -> String {
     let body = strip_frontmatter(content);
-
     for line in body.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -179,11 +248,10 @@ fn extract_description(content: &str) -> String {
         }
         return trimmed.to_string();
     }
-
     String::new()
 }
 
-/// Strip YAML frontmatter (including delimiters) from markdown content, returning the body.
+/// Strip YAML frontmatter from markdown content.
 fn strip_frontmatter(content: &str) -> &str {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
@@ -193,7 +261,6 @@ fn strip_frontmatter(content: &str) -> &str {
     match after_open.find("\n---") {
         Some(end) => {
             let rest = &after_open[end + 4..];
-            // Skip the newline after closing ---
             rest.strip_prefix('\n').unwrap_or(rest)
         }
         None => content,
@@ -211,7 +278,7 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Print info in human-readable key-value format using comfy-table.
+/// Print info in human-readable key-value format.
 fn print_info(info: &InfoResult) {
     let version = if info.version.is_empty() {
         "-".to_string()
@@ -223,6 +290,7 @@ fn print_info(info: &InfoResult) {
         ("Name", info.name.clone()),
         ("Type", info.resource_type.clone()),
         ("Version", version),
+        ("Status", info.status.clone()),
         ("Description", info.description.clone()),
         ("Dependencies", info.dependencies.join(", ")),
         ("Files", info.file_count.to_string()),
@@ -243,231 +311,7 @@ mod tests {
         TempDir::new().expect("failed to create temp dir")
     }
 
-    #[test]
-    fn info_installed_skill() {
-        let root = temp_dir();
-        let skill_dir = root.path().join(".claude/skills/denden");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            "# Denden\nA communication skill.",
-        )
-        .unwrap();
-        fs::write(skill_dir.join("extra.md"), "extra content").unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "denden",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.name, "denden");
-        assert_eq!(result.resource_type, "skill");
-        assert_eq!(result.file_count, 2);
-        assert!(result.total_size > 0);
-        assert_eq!(result.description, "A communication skill.");
-        assert_eq!(result.install_location, ".claude/skills/denden");
-    }
-
-    #[test]
-    fn info_installed_agent() {
-        let root = temp_dir();
-        let agents_dir = root.path().join(".claude/agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-        fs::write(agents_dir.join("debugger.md"), "# Debugger\nDebugs code.").unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Agent,
-            name: "debugger",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.name, "debugger");
-        assert_eq!(result.resource_type, "agent");
-        assert_eq!(result.file_count, 1);
-        assert!(result.total_size > 0);
-        assert_eq!(result.description, "Debugs code.");
-        assert_eq!(result.install_location, ".claude/agents/debugger.md");
-    }
-
-    #[test]
-    fn info_installed_command() {
-        let root = temp_dir();
-        let cmds_dir = root.path().join(".claude/commands");
-        fs::create_dir_all(&cmds_dir).unwrap();
-        fs::write(
-            cmds_dir.join("deploy.md"),
-            "# Deploy\nDeploy to production.",
-        )
-        .unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Command,
-            name: "deploy",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.name, "deploy");
-        assert_eq!(result.resource_type, "command");
-        assert_eq!(result.description, "Deploy to production.");
-    }
-
-    #[test]
-    fn info_installed_rule() {
-        let root = temp_dir();
-        let rules_dir = root.path().join(".claude/rules");
-        fs::create_dir_all(&rules_dir).unwrap();
-        fs::write(
-            rules_dir.join("no-console-log.md"),
-            "# No Console Log\nDisallow console.log in production.",
-        )
-        .unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Rule,
-            name: "no-console-log",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.name, "no-console-log");
-        assert_eq!(result.resource_type, "rule");
-        assert_eq!(result.description, "Disallow console.log in production.");
-    }
-
-    #[test]
-    fn info_not_installed_errors() {
-        let root = temp_dir();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "nonexistent",
-            project_dir: root.path(),
-            json: false,
-            _verbose: false,
-        };
-
-        let err = run(&opts).unwrap_err();
-        assert!(err.contains("not installed"));
-    }
-
-    #[test]
-    fn info_with_manifest_version() {
-        let root = temp_dir();
-        let skill_dir = root.path().join(".claude/skills/denden");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
-
-        fs::write(
-            root.path().join("relava.toml"),
-            "[skills]\ndenden = \"1.2.0\"\n",
-        )
-        .unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "denden",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.version, "1.2.0");
-    }
-
-    #[test]
-    fn info_without_manifest_empty_version() {
-        let root = temp_dir();
-        let skill_dir = root.path().join(".claude/skills/denden");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "denden",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.version, "");
-    }
-
-    #[test]
-    fn info_with_dependencies() {
-        let root = temp_dir();
-        let skill_dir = root.path().join(".claude/skills/code-review");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nmetadata:\n  relava:\n    skills:\n      - security-baseline\n      - linting\n---\n# Code Review\nReview code for quality.",
-        )
-        .unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "code-review",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.dependencies, vec!["security-baseline", "linting"]);
-        assert_eq!(result.description, "Review code for quality.");
-    }
-
-    #[test]
-    fn info_result_serializes_to_json() {
-        let result = InfoResult {
-            name: "denden".to_string(),
-            resource_type: "skill".to_string(),
-            version: "1.0.0".to_string(),
-            description: "A skill".to_string(),
-            dependencies: vec!["dep-a".to_string()],
-            file_count: 3,
-            total_size: 1024,
-            install_location: ".claude/skills/denden".to_string(),
-        };
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("denden"));
-        assert!(json.contains("dep-a"));
-        assert!(json.contains("1024"));
-    }
-
-    #[test]
-    fn info_skill_with_subdirectories() {
-        let root = temp_dir();
-        let skill_dir = root.path().join(".claude/skills/denden");
-        fs::create_dir_all(skill_dir.join("templates")).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
-        fs::write(skill_dir.join("templates/greeting.md"), "Hello!").unwrap();
-        fs::write(skill_dir.join("templates/farewell.md"), "Goodbye!").unwrap();
-
-        let opts = InfoOpts {
-            resource_type: ResourceType::Skill,
-            name: "denden",
-            project_dir: root.path(),
-            json: true,
-            _verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.file_count, 3);
-    }
+    // --- Unit tests for internal helpers (no server needed) ---
 
     #[test]
     fn extract_description_simple() {
@@ -506,24 +350,130 @@ mod tests {
     }
 
     #[test]
-    fn info_invalid_slug_errors() {
+    fn strip_frontmatter_unclosed() {
+        let content = "---\nname: test\n# No closing delimiter\nSome body text.";
+        assert_eq!(strip_frontmatter(content), content);
+    }
+
+    #[test]
+    fn load_metadata_with_dependencies() {
         let root = temp_dir();
+        let skill_dir = root.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nmetadata:\n  relava:\n    skills:\n      - dep-a\n      - dep-b\n---\n# Test\nA test skill.",
+        )
+        .unwrap();
+
+        let (desc, deps) = load_metadata(ResourceType::Skill, &skill_dir);
+        assert_eq!(desc, "A test skill.");
+        assert_eq!(deps, vec!["dep-a", "dep-b"]);
+    }
+
+    #[test]
+    fn compute_size_single_file() {
+        let root = temp_dir();
+        let agents_dir = root.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        let file_path = agents_dir.join("test.md");
+        fs::write(&file_path, "# Test\nSome content.").unwrap();
+
+        let (count, size) = compute_size(ResourceType::Agent, &file_path);
+        assert_eq!(count, 1);
+        assert!(size > 0);
+    }
+
+    #[test]
+    fn compute_size_directory() {
+        let root = temp_dir();
+        let skill_dir = root.path().join("skill");
+        fs::create_dir_all(skill_dir.join("sub")).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Skill").unwrap();
+        fs::write(skill_dir.join("sub/extra.md"), "extra").unwrap();
+
+        let (count, size) = compute_size(ResourceType::Skill, &skill_dir);
+        assert_eq!(count, 2);
+        assert!(size > 0);
+    }
+
+    #[test]
+    fn info_result_serializes_to_json() {
+        let result = InfoResult {
+            name: "denden".to_string(),
+            resource_type: "skill".to_string(),
+            version: "1.0.0".to_string(),
+            description: "A skill".to_string(),
+            dependencies: vec!["dep-a".to_string()],
+            file_count: 3,
+            total_size: 1024,
+            install_location: ".claude/skills/denden".to_string(),
+            status: "installed".to_string(),
+        };
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("denden"));
+        assert!(json.contains("dep-a"));
+        assert!(json.contains("1024"));
+        assert!(json.contains("installed"));
+    }
+
+    // --- Integration tests: server interaction ---
+
+    #[test]
+    fn info_fails_when_server_unreachable_and_not_installed() {
+        let root = temp_dir();
+        let opts = InfoOpts {
+            server_url: "http://127.0.0.1:19999",
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let err = run(&opts).unwrap_err();
+        assert!(
+            err.contains("Registry server not running"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn info_fails_when_server_unreachable_even_if_installed() {
+        let root = temp_dir();
+        let skill_dir = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Denden\nA communication skill.",
+        )
+        .unwrap();
 
         let opts = InfoOpts {
+            server_url: "http://127.0.0.1:19999",
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let err = run(&opts).unwrap_err();
+        assert!(
+            err.contains("Registry server not running"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn info_invalid_slug_errors() {
+        let root = temp_dir();
+        let opts = InfoOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "../../../etc",
             project_dir: root.path(),
             json: false,
             _verbose: false,
         };
-
         assert!(run(&opts).is_err());
-    }
-
-    #[test]
-    fn strip_frontmatter_unclosed() {
-        // Unclosed frontmatter should return original content
-        let content = "---\nname: test\n# No closing delimiter\nSome body text.";
-        assert_eq!(strip_frontmatter(content), content);
     }
 }

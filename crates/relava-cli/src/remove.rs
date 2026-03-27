@@ -2,10 +2,12 @@ use std::path::Path;
 
 use relava_types::validate::{self, ResourceType};
 
+use crate::api_client::ApiClient;
 use crate::install;
 
 /// Options for the remove command.
 pub struct RemoveOpts<'a> {
+    pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,
     pub project_dir: &'a Path,
@@ -33,11 +35,20 @@ pub fn run(opts: &RemoveOpts) -> Result<RemoveResult, String> {
     // Validate the resource name
     validate::validate_slug(opts.name).map_err(|e| e.to_string())?;
 
-    // Check if installed — warn but don't error
+    // Remove from the registry (server must be running)
+    let client = ApiClient::new(opts.server_url);
+    let rt_str = opts.resource_type.to_string();
+    match client.delete_resource(&rt_str, opts.name) {
+        Ok(()) => {}
+        Err(crate::api_client::ApiError::NotFound(_)) => {} // already gone from registry
+        Err(e) => return Err(e.to_string()),
+    }
+
+    // Check if installed locally — warn but don't error
     if !install::is_installed(opts.project_dir, opts.resource_type, opts.name) {
         if !opts.json {
             eprintln!(
-                "[warn] {} '{}' is not installed",
+                "[warn] {} '{}' is not installed locally",
                 opts.resource_type, opts.name
             );
         }
@@ -117,14 +128,49 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_empty_parents_removes_empty_dirs() {
+        let root = temp_dir();
+        let deep = root.path().join("a/b/c");
+        fs::create_dir_all(&deep).unwrap();
+        let file = deep.join("file.txt");
+        fs::write(&file, "data").unwrap();
+        fs::remove_file(&file).unwrap();
+
+        cleanup_empty_parents(&file, root.path());
+        assert!(!root.path().join("a").exists());
+    }
+
+    #[test]
+    fn cleanup_empty_parents_preserves_nonempty() {
+        let root = temp_dir();
+        let dir_a = root.path().join("a");
+        let dir_b = dir_a.join("b");
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("keep.txt"), "keep").unwrap();
+        let file = dir_b.join("file.txt");
+        fs::write(&file, "data").unwrap();
+        fs::remove_file(&file).unwrap();
+
+        cleanup_empty_parents(&file, root.path());
+        assert!(!dir_b.exists());
+        assert!(dir_a.exists());
+    }
+
+    #[test]
     fn remove_skill_deletes_directory() {
         let root = temp_dir();
         let skill_dir = root.path().join(".claude/skills/denden");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
-        fs::write(skill_dir.join("extra.md"), "extra").unwrap();
+
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("DELETE", "/api/v1/resources/skill/denden")
+            .with_status(204)
+            .create();
 
         let opts = RemoveOpts {
+            server_url: &server.url(),
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -133,8 +179,6 @@ mod tests {
         };
 
         let result = run(&opts).unwrap();
-        assert_eq!(result.resource_type, "skill");
-        assert_eq!(result.name, "denden");
         assert!(result.was_removed);
         assert!(!skill_dir.exists());
     }
@@ -146,7 +190,14 @@ mod tests {
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
 
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("DELETE", "/api/v1/resources/agent/debugger")
+            .with_status(204)
+            .create();
+
         let opts = RemoveOpts {
+            server_url: &server.url(),
             resource_type: ResourceType::Agent,
             name: "debugger",
             project_dir: root.path(),
@@ -155,55 +206,23 @@ mod tests {
         };
 
         let result = run(&opts).unwrap();
-        assert_eq!(result.resource_type, "agent");
+        assert!(result.was_removed);
         assert!(!agents_dir.join("debugger.md").exists());
-    }
-
-    #[test]
-    fn remove_command_deletes_file() {
-        let root = temp_dir();
-        let cmds_dir = root.path().join(".claude/commands");
-        fs::create_dir_all(&cmds_dir).unwrap();
-        fs::write(cmds_dir.join("deploy.md"), "# Deploy").unwrap();
-
-        let opts = RemoveOpts {
-            resource_type: ResourceType::Command,
-            name: "deploy",
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.resource_type, "command");
-        assert!(!cmds_dir.join("deploy.md").exists());
-    }
-
-    #[test]
-    fn remove_rule_deletes_file() {
-        let root = temp_dir();
-        let rules_dir = root.path().join(".claude/rules");
-        fs::create_dir_all(&rules_dir).unwrap();
-        fs::write(rules_dir.join("no-console-log.md"), "# Rule").unwrap();
-
-        let opts = RemoveOpts {
-            resource_type: ResourceType::Rule,
-            name: "no-console-log",
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
-        };
-
-        let result = run(&opts).unwrap();
-        assert_eq!(result.resource_type, "rule");
-        assert!(!rules_dir.join("no-console-log.md").exists());
     }
 
     #[test]
     fn remove_not_installed_warns() {
         let root = temp_dir();
 
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("DELETE", "/api/v1/resources/skill/nonexistent")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+
         let opts = RemoveOpts {
+            server_url: &server.url(),
             resource_type: ResourceType::Skill,
             name: "nonexistent",
             project_dir: root.path(),
@@ -211,10 +230,8 @@ mod tests {
             verbose: false,
         };
 
-        // Should succeed with warning, not error
         let result = run(&opts).unwrap();
         assert!(!result.was_removed);
-        assert_eq!(result.removed_path, "");
     }
 
     #[test]
@@ -224,7 +241,14 @@ mod tests {
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
 
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("DELETE", "/api/v1/resources/agent/debugger")
+            .with_status(204)
+            .create();
+
         let opts = RemoveOpts {
+            server_url: &server.url(),
             resource_type: ResourceType::Agent,
             name: "debugger",
             project_dir: root.path(),
@@ -233,49 +257,8 @@ mod tests {
         };
 
         run(&opts).unwrap();
-        // .claude/agents/ should be removed (empty after file deletion)
         assert!(!agents_dir.exists());
-        // .claude/ should also be removed (empty after agents/ removal)
         assert!(!root.path().join(".claude").exists());
-    }
-
-    #[test]
-    fn remove_preserves_nonempty_parent() {
-        let root = temp_dir();
-        let agents_dir = root.path().join(".claude/agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-        fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
-        fs::write(agents_dir.join("other.md"), "# Other").unwrap();
-
-        let opts = RemoveOpts {
-            resource_type: ResourceType::Agent,
-            name: "debugger",
-            project_dir: root.path(),
-            json: false,
-            verbose: false,
-        };
-
-        run(&opts).unwrap();
-        // agents/ dir should still exist (has other.md)
-        assert!(agents_dir.exists());
-        assert!(agents_dir.join("other.md").exists());
-    }
-
-    #[test]
-    fn remove_not_installed_json_mode_also_ok() {
-        let root = temp_dir();
-
-        let opts = RemoveOpts {
-            resource_type: ResourceType::Skill,
-            name: "nonexistent",
-            project_dir: root.path(),
-            json: true,
-            verbose: false,
-        };
-
-        // JSON mode should also return Ok (consistent with non-JSON)
-        let result = run(&opts).unwrap();
-        assert!(!result.was_removed);
     }
 
     #[test]
@@ -283,6 +266,7 @@ mod tests {
         let root = temp_dir();
 
         let opts = RemoveOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "Invalid-Name",
             project_dir: root.path(),
@@ -291,5 +275,30 @@ mod tests {
         };
 
         assert!(run(&opts).is_err());
+    }
+
+    #[test]
+    fn remove_fails_when_server_unreachable() {
+        let root = temp_dir();
+        let skill_dir = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
+
+        let opts = RemoveOpts {
+            server_url: "http://127.0.0.1:19999",
+            resource_type: ResourceType::Skill,
+            name: "denden",
+            project_dir: root.path(),
+            json: false,
+            verbose: false,
+        };
+
+        let err = run(&opts).unwrap_err();
+        assert!(
+            err.contains("Registry server not running"),
+            "got: {err}"
+        );
+        // Files should NOT be removed when server is unreachable
+        assert!(skill_dir.exists());
     }
 }

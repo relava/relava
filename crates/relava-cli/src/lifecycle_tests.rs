@@ -183,9 +183,35 @@ fn install_resource(
     .expect("install should succeed")
 }
 
-/// List resources with default opts.
+/// Create a mock server that returns empty results for list and accepts
+/// delete requests (returns 404 = not in registry, which is OK).
+fn mock_server() -> mockito::ServerGuard {
+    let mut server = mockito::Server::new();
+    server
+        .mock("GET", mockito::Matcher::Regex(r"/api/v1/resources.*".to_string()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("[]")
+        .create();
+    server
+        .mock("DELETE", mockito::Matcher::Any)
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"error":"not found"}"#)
+        .create();
+    server
+        .mock("GET", "/api/v1/health")
+        .with_status(200)
+        .with_body(r#"{"status":"ok"}"#)
+        .create();
+    server
+}
+
+/// List resources with default opts (uses mock server).
 fn list_resources(project_dir: &Path, resource_type: Option<ResourceType>) -> list::ListResult {
+    let server = mock_server();
     list::run(&list::ListOpts {
+        server_url: &server.url(),
         resource_type,
         project_dir,
         json: true,
@@ -194,13 +220,15 @@ fn list_resources(project_dir: &Path, resource_type: Option<ResourceType>) -> li
     .expect("list should succeed")
 }
 
-/// Remove a resource with default opts.
+/// Remove a resource with default opts (uses mock server).
 fn remove_resource(
     project_dir: &Path,
     resource_type: ResourceType,
     name: &str,
 ) -> remove::RemoveResult {
+    let server = mock_server();
     remove::run(&remove::RemoveOpts {
+        server_url: &server.url(),
         resource_type,
         name,
         project_dir,
@@ -449,6 +477,7 @@ fn lifecycle_install_disable_enable_remove() {
 
     // Disable
     let disable_result = disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "git-workflow",
         project_dir: project.path(),
@@ -467,6 +496,7 @@ fn lifecycle_install_disable_enable_remove() {
 
     // Enable
     let enable_result = enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "git-workflow",
         project_dir: project.path(),
@@ -512,6 +542,7 @@ fn lifecycle_agent_disable_enable() {
 
     // Disable
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "reviewer",
         project_dir: project.path(),
@@ -524,6 +555,7 @@ fn lifecycle_agent_disable_enable() {
 
     // Enable
     enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "reviewer",
         project_dir: project.path(),
@@ -1272,6 +1304,7 @@ fn disable_conflict_when_both_exist() {
     fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
     let result = disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "conflict-skill",
         project_dir: project.path(),
@@ -1327,6 +1360,7 @@ fn remove_disabled_resource_warns_not_installed() {
     );
 
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "to-remove",
         project_dir: project.path(),
@@ -1369,6 +1403,7 @@ fn update_disabled_resource_reports_not_installed() {
     write_manifest(project.path(), "[skills]\ndisabled-update = \"*\"\n");
 
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "disabled-update",
         project_dir: project.path(),
@@ -1692,6 +1727,7 @@ fn enable_disable_double_round_trip() {
 
     // Round 1: disable then enable
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "toggle-agent",
         project_dir: project.path(),
@@ -1703,6 +1739,7 @@ fn enable_disable_double_round_trip() {
     assert!(disabled_path.exists());
 
     enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "toggle-agent",
         project_dir: project.path(),
@@ -1715,6 +1752,7 @@ fn enable_disable_double_round_trip() {
 
     // Round 2: disable then enable again
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "toggle-agent",
         project_dir: project.path(),
@@ -1726,6 +1764,7 @@ fn enable_disable_double_round_trip() {
     assert!(disabled_path.exists());
 
     enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Agent,
         name: "toggle-agent",
         project_dir: project.path(),
@@ -1864,6 +1903,7 @@ fn disable_already_disabled_is_noop() {
 
     // First disable succeeds
     let first = disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "double-disable",
         project_dir: project.path(),
@@ -1875,6 +1915,7 @@ fn disable_already_disabled_is_noop() {
 
     // Second disable is a no-op (already disabled)
     let second = disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "double-disable",
         project_dir: project.path(),
@@ -1905,6 +1946,7 @@ fn enable_already_active_is_noop() {
 
     // Enable without prior disable is a no-op (already active)
     let result = enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "not-disabled",
         project_dir: project.path(),
@@ -1938,6 +1980,7 @@ fn lifecycle_command_disable_enable() {
     assert!(active_path.exists());
 
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Command,
         name: "my-cmd",
         project_dir: project.path(),
@@ -1953,6 +1996,7 @@ fn lifecycle_command_disable_enable() {
     assert_eq!(list_result.resources[0].status, "disabled");
 
     enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Command,
         name: "my-cmd",
         project_dir: project.path(),
@@ -1984,6 +2028,7 @@ fn lifecycle_rule_disable_enable() {
         .join(".claude/rules/.disabled/toggle-rule.md");
 
     disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Rule,
         name: "toggle-rule",
         project_dir: project.path(),
@@ -1995,6 +2040,7 @@ fn lifecycle_rule_disable_enable() {
     assert!(disabled_path.exists());
 
     enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Rule,
         name: "toggle-rule",
         project_dir: project.path(),
@@ -2313,6 +2359,7 @@ fn enable_nonexistent_resource_returns_error() {
     let project = temp_dir();
 
     let result = enable::run(&enable::EnableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "ghost-skill",
         project_dir: project.path(),
@@ -2332,6 +2379,7 @@ fn disable_nonexistent_resource_returns_error() {
     let project = temp_dir();
 
     let result = disable::run(&disable::DisableOpts {
+        server_url: "http://127.0.0.1:19999",
         resource_type: ResourceType::Skill,
         name: "ghost-skill",
         project_dir: project.path(),

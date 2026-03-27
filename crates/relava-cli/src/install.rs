@@ -939,7 +939,7 @@ Review code for security issues.
         // The error should mention the server or connection issue
         let err = result.unwrap_err();
         assert!(
-            err.contains("not reachable") || err.contains("error") || err.contains("HTTP"),
+            err.contains("Registry server not running") || err.contains("error") || err.contains("HTTP"),
             "Error message should indicate server issue: {err}"
         );
     }
