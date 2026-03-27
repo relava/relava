@@ -523,8 +523,7 @@ async fn publish_resource(
     }
 
     // Determine version: extract from frontmatter or auto-increment
-    let version_str = determine_version(rt, &name, &file_data, &state);
-    let version_str = match version_str {
+    let version_str = match determine_version(rt, &name, &file_data, &state) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -601,13 +600,8 @@ async fn publish_resource(
     }
 
     // Compute overall checksum (SHA-256 of all file checksums concatenated)
-    let overall_checksum = {
-        let mut combined = String::new();
-        for meta_file in &metadata.files {
-            combined.push_str(&meta_file.sha256);
-        }
-        sha256_hex(combined.as_bytes())
-    };
+    let combined: String = metadata.files.iter().map(|f| f.sha256.as_str()).collect();
+    let overall_checksum = sha256_hex(combined.as_bytes());
 
     // Publish to store
     let resource = Resource {
@@ -717,26 +711,8 @@ fn extract_frontmatter_version(content: &str) -> Option<String> {
 
 /// Compute SHA-256 hex digest of data.
 fn sha256_hex(data: &[u8]) -> String {
-    use std::fmt::Write;
-    // Simple SHA-256: use ring or just recompute manually
-    // Actually, we need a SHA-256 crate. Let's use the sha2 crate.
-    // But the server doesn't have sha2 as a dep yet. Let me use a simple approach.
-    // Actually, we can compute it inline using rusqlite's built-in or just store
-    // the client-provided checksums after verification. But for verification,
-    // we need to compute sha256 ourselves.
-
-    // For now, use a basic approach: since we can't add sha2 easily to the server,
-    // let's compute using the ring crate or just trust the client checksums.
-    // Actually, let me just add sha2 to the server dependencies.
-
-    // Placeholder that will be replaced with actual sha256 computation
     use sha2::{Digest, Sha256};
-    let result = Sha256::digest(data);
-    let mut hex = String::with_capacity(64);
-    for byte in result {
-        write!(hex, "{byte:02x}").unwrap();
-    }
-    hex
+    format!("{:x}", Sha256::digest(data))
 }
 
 // ---------------------------------------------------------------------------
@@ -859,7 +835,7 @@ fn collect_blob_files(
     blob_store: &crate::store::LocalBlobStore,
     store_path: &str,
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let root = blob_store.resolve_path(store_path);
+    let root = blob_store.resolve(store_path);
     if !root.is_dir() {
         return Ok(Vec::new());
     }
@@ -1772,13 +1748,7 @@ mod tests {
     /// Compute SHA-256 hex of data for test assertions.
     fn test_sha256(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
-        use std::fmt::Write;
-        let result = Sha256::digest(data);
-        let mut hex = String::with_capacity(64);
-        for byte in result {
-            write!(hex, "{byte:02x}").unwrap();
-        }
-        hex
+        format!("{:x}", Sha256::digest(data))
     }
 
     /// Send a multipart publish request.

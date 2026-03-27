@@ -140,14 +140,24 @@ pub fn run(opts: &PublishOpts) -> Result<PublishResult, String> {
     }
 
     let client = ApiClient::new(opts.server_url);
-    let result = upload_multipart(
-        &client,
-        opts.resource_type,
-        opts.name,
-        &resource_dir,
-        &files,
-        &metadata,
-    )?;
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
+    let response = client
+        .publish(
+            opts.resource_type,
+            opts.name,
+            &resource_dir,
+            &files,
+            &metadata,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let result = PublishResult {
+        resource_type: opts.resource_type.to_string(),
+        name: opts.name.to_string(),
+        version: response.version,
+        files: files.len(),
+        total_bytes,
+    };
 
     if !opts.json {
         println!();
@@ -170,30 +180,29 @@ pub fn run(opts: &PublishOpts) -> Result<PublishResult, String> {
 /// Resolve the resource directory from `--path` or the default location.
 fn resolve_resource_dir(opts: &PublishOpts) -> Result<PathBuf, String> {
     if let Some(path) = opts.path {
-        let canonical = path
+        return path
             .canonicalize()
-            .map_err(|e| format!("cannot access '{}': {e}", path.display()))?;
-        Ok(canonical)
-    } else {
-        // Default: .claude/<type_dir>/<name> relative to cwd
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("cannot determine current directory: {e}"))?;
-        let type_dir = match opts.resource_type {
-            ResourceType::Skill => "skills",
-            ResourceType::Agent => "agents",
-            ResourceType::Command => "commands",
-            ResourceType::Rule => "rules",
-        };
-        let path = cwd.join(".claude").join(type_dir).join(opts.name);
-        if !path.exists() {
-            return Err(format!(
-                "Resource directory not found: {}\nUse --path to specify a custom location.",
-                path.display()
-            ));
-        }
-        path.canonicalize()
-            .map_err(|e| format!("cannot access '{}': {e}", path.display()))
+            .map_err(|e| format!("cannot access '{}': {e}", path.display()));
     }
+
+    // Default: .claude/<type_dir>/<name> relative to cwd
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("cannot determine current directory: {e}"))?;
+    let type_dir = match opts.resource_type {
+        ResourceType::Skill => "skills",
+        ResourceType::Agent => "agents",
+        ResourceType::Command => "commands",
+        ResourceType::Rule => "rules",
+    };
+    let path = cwd.join(".claude").join(type_dir).join(opts.name);
+    if !path.exists() {
+        return Err(format!(
+            "Resource directory not found: {}\nUse --path to specify a custom location.",
+            path.display()
+        ));
+    }
+    path.canonicalize()
+        .map_err(|e| format!("cannot access '{}': {e}", path.display()))
 }
 
 /// Collect all files under the resource directory, computing SHA-256 hashes.
@@ -211,9 +220,7 @@ fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
         let data =
             std::fs::read(&path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
 
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        let sha256 = format!("{:x}", hasher.finalize());
+        let sha256 = format!("{:x}", Sha256::digest(&data));
 
         entries.push(FileEntry {
             relative_path: relative,
@@ -305,30 +312,6 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
-}
-
-/// Upload files via multipart POST to the server.
-fn upload_multipart(
-    client: &ApiClient,
-    resource_type: ResourceType,
-    name: &str,
-    root: &Path,
-    files: &[FileEntry],
-    metadata: &serde_json::Value,
-) -> Result<PublishResult, String> {
-    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
-
-    let result = client
-        .publish(resource_type, name, root, files, metadata)
-        .map_err(|e| e.to_string())?;
-
-    Ok(PublishResult {
-        resource_type: resource_type.to_string(),
-        name: name.to_string(),
-        version: result.version,
-        files: files.len(),
-        total_bytes,
-    })
 }
 
 // ---------------------------------------------------------------------------
