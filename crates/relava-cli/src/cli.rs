@@ -122,6 +122,14 @@ pub enum Command {
         /// Custom source directory
         #[arg(long)]
         path: Option<String>,
+
+        /// Skip change detection and publish regardless
+        #[arg(long)]
+        force: bool,
+
+        /// Auto-confirm publish prompt (non-interactive)
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Resolve and display the dependency tree

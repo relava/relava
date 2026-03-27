@@ -271,6 +271,21 @@ impl ApiClient {
         ))
     }
 
+    /// Get per-file checksums for a specific version.
+    ///
+    /// Used for change detection before publishing. Returns `NotFound`
+    /// if the resource or version does not exist.
+    pub fn get_version_checksums(
+        &self,
+        resource_type: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<ChecksumsResponse, ApiError> {
+        self.get_json(&format!(
+            "/api/v1/resources/{resource_type}/{name}/versions/{version}/checksums"
+        ))
+    }
+
     /// Publish a resource via multipart upload.
     ///
     /// Sends metadata JSON and all resource files as a multipart form to
@@ -346,6 +361,20 @@ pub struct PublishResponse {
     pub name: String,
     #[serde(rename = "type")]
     pub resource_type: String,
+}
+
+/// Per-file checksum entry returned by the checksums endpoint.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct FileChecksumResponse {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Response from the checksums endpoint.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct ChecksumsResponse {
+    pub version: String,
+    pub files: Vec<FileChecksumResponse>,
 }
 
 #[cfg(test)]
@@ -667,5 +696,53 @@ mod tests {
         assert_eq!(resp.order.len(), 2);
         assert_eq!(resp.order[0].resource_type, "skill");
         assert_eq!(resp.order[0].name, "notify");
+    }
+
+    // -- Checksums endpoint tests --
+
+    #[test]
+    fn get_version_checksums_returns_files() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources/skill/denden/versions/1.0.0/checksums")
+            .with_status(200)
+            .with_body(r#"{"version":"1.0.0","files":[{"path":"SKILL.md","sha256":"abc123"},{"path":"lib/utils.md","sha256":"def456"}]}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let resp = client
+            .get_version_checksums("skill", "denden", "1.0.0")
+            .unwrap();
+        assert_eq!(resp.version, "1.0.0");
+        assert_eq!(resp.files.len(), 2);
+        assert_eq!(resp.files[0].path, "SKILL.md");
+        assert_eq!(resp.files[0].sha256, "abc123");
+    }
+
+    #[test]
+    fn get_version_checksums_not_found() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock(
+                "GET",
+                "/api/v1/resources/skill/missing/versions/1.0.0/checksums",
+            )
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client
+            .get_version_checksums("skill", "missing", "1.0.0")
+            .unwrap_err();
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn checksums_response_deserializes_empty_files() {
+        let json = r#"{"version":"0.1.0","files":[]}"#;
+        let resp: ChecksumsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.version, "0.1.0");
+        assert!(resp.files.is_empty());
     }
 }
