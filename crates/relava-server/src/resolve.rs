@@ -181,19 +181,11 @@ fn dfs<S: ResourceStore>(
     let deps = parse_deps(&version);
 
     // Recurse into dependencies (skills first, then agents)
-    let dep_entries: Vec<(ResourceType, &str)> = deps
-        .skills
-        .iter()
-        .map(|n| (ResourceType::Skill, n.as_str()))
-        .chain(
-            deps.agents
-                .iter()
-                .map(|n| (ResourceType::Agent, n.as_str())),
-        )
-        .collect();
-
-    for (dep_type, dep_name) in dep_entries {
-        dfs(store, dep_type, dep_name, None, depth + 1, state)?;
+    for skill in &deps.skills {
+        dfs(store, ResourceType::Skill, skill, None, depth + 1, state)?;
+    }
+    for agent in &deps.agents {
+        dfs(store, ResourceType::Agent, agent, None, depth + 1, state)?;
     }
 
     // Done resolving — pop from path, record in resolved map

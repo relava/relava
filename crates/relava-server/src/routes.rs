@@ -363,14 +363,12 @@ async fn resolve_deps(
         Err(resolve::ResolveError::NotFound(msg)) => {
             (StatusCode::NOT_FOUND, Json(ApiError::new(msg))).into_response()
         }
-        Err(resolve::ResolveError::CyclicDependency(cycle)) => {
-            let msg = format!("circular dependency detected: {}", cycle.join(" -> "));
-            (StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError::new(msg))).into_response()
-        }
-        Err(resolve::ResolveError::DepthLimitExceeded { depth, limit }) => {
-            let msg = format!("dependency depth {depth} exceeds limit of {limit}");
-            (StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError::new(msg))).into_response()
-        }
+        Err(e @ resolve::ResolveError::CyclicDependency(_))
+        | Err(e @ resolve::ResolveError::DepthLimitExceeded { .. }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new(e.to_string())),
+        )
+            .into_response(),
         Err(resolve::ResolveError::Store(e)) => store_err(e),
     }
 }
@@ -742,43 +740,64 @@ mod tests {
 
     // -- Resolve endpoint --
 
-    #[tokio::test]
-    async fn resolve_single_resource() {
-        let store = SqliteResourceStore::open_in_memory().unwrap();
+    /// Publish a resource+version into a store with minimal boilerplate.
+    fn publish(
+        store: &SqliteResourceStore,
+        rtype: &str,
+        name: &str,
+        ver: &str,
+        manifest: Option<&str>,
+    ) {
+        use crate::store::models::{Resource as R, Version as V};
         store
             .publish(
-                &crate::store::models::Resource {
+                &R {
                     id: 0,
                     scope: None,
-                    name: "denden".to_string(),
-                    resource_type: "skill".to_string(),
+                    name: name.to_string(),
+                    resource_type: rtype.to_string(),
                     description: None,
                     latest_version: None,
                     metadata_json: None,
                     updated_at: None,
                 },
-                &crate::store::models::Version {
+                &V {
                     id: 0,
                     resource_id: 0,
-                    version: "1.0.0".to_string(),
+                    version: ver.to_string(),
                     store_path: None,
                     checksum: None,
-                    manifest_json: None,
+                    manifest_json: manifest.map(str::to_string),
                     published_by: None,
                     published_at: None,
                 },
             )
             .unwrap();
+    }
 
+    /// Build a test app from a pre-populated store.
+    fn app_with_store(store: SqliteResourceStore) -> Router {
         let state = Arc::new(AppState {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
         });
-        let app = Router::new()
+        Router::new()
             .nest("/api/v1", resource_routes())
-            .with_state(state);
+            .with_state(state)
+    }
 
-        let resp = send(app, "GET", "/api/v1/resolve/skill/denden", None).await;
+    #[tokio::test]
+    async fn resolve_single_resource() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/denden",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
         assert_eq!(body["root"], "skill/denden@1.0.0");
@@ -792,64 +811,22 @@ mod tests {
     #[tokio::test]
     async fn resolve_with_dependencies() {
         let store = SqliteResourceStore::open_in_memory().unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "code-review".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "1.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: Some(r#"{"skills":["security-baseline"]}"#.to_string()),
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "security-baseline".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "0.5.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: None,
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
+        publish(
+            &store,
+            "skill",
+            "code-review",
+            "1.0.0",
+            Some(r#"{"skills":["security-baseline"]}"#),
+        );
+        publish(&store, "skill", "security-baseline", "0.5.0", None);
 
-        let state = Arc::new(AppState {
-            started_at: std::time::Instant::now(),
-            store: Mutex::new(store),
-        });
-        let app = Router::new()
-            .nest("/api/v1", resource_routes())
-            .with_state(state);
-
-        let resp = send(app, "GET", "/api/v1/resolve/skill/code-review", None).await;
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/code-review",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
         let order = body["order"].as_array().unwrap();
@@ -861,65 +838,11 @@ mod tests {
     #[tokio::test]
     async fn resolve_with_version_query() {
         let store = SqliteResourceStore::open_in_memory().unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "denden".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "1.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: None,
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "denden".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "2.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: None,
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-
-        let state = Arc::new(AppState {
-            started_at: std::time::Instant::now(),
-            store: Mutex::new(store),
-        });
-        let app = Router::new()
-            .nest("/api/v1", resource_routes())
-            .with_state(state);
+        publish(&store, "skill", "denden", "1.0.0", None);
+        publish(&store, "skill", "denden", "2.0.0", None);
 
         let resp = send(
-            app,
+            app_with_store(store),
             "GET",
             "/api/v1/resolve/skill/denden?version=1.0.0",
             None,
@@ -940,64 +863,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_cycle_returns_422() {
         let store = SqliteResourceStore::open_in_memory().unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "a".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "1.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: Some(r#"{"skills":["b"]}"#.to_string()),
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "b".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "1.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: Some(r#"{"skills":["a"]}"#.to_string()),
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
+        publish(&store, "skill", "a", "1.0.0", Some(r#"{"skills":["b"]}"#));
+        publish(&store, "skill", "b", "1.0.0", Some(r#"{"skills":["a"]}"#));
 
-        let state = Arc::new(AppState {
-            started_at: std::time::Instant::now(),
-            store: Mutex::new(store),
-        });
-        let app = Router::new()
-            .nest("/api/v1", resource_routes())
-            .with_state(state);
-
-        let resp = send(app, "GET", "/api/v1/resolve/skill/a", None).await;
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/a",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_body(resp).await;
         let error = body["error"].as_str().unwrap();
@@ -1026,91 +901,23 @@ mod tests {
     #[tokio::test]
     async fn resolve_mixed_deps_via_endpoint() {
         let store = SqliteResourceStore::open_in_memory().unwrap();
-        // Agent depends on skill + agent
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "orchestrator".to_string(),
-                    resource_type: "agent".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "1.0.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: Some(
-                        r#"{"skills":["notify"],"agents":["debugger"]}"#.to_string(),
-                    ),
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "notify".to_string(),
-                    resource_type: "skill".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "0.3.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: None,
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
-        store
-            .publish(
-                &crate::store::models::Resource {
-                    id: 0,
-                    scope: None,
-                    name: "debugger".to_string(),
-                    resource_type: "agent".to_string(),
-                    description: None,
-                    latest_version: None,
-                    metadata_json: None,
-                    updated_at: None,
-                },
-                &crate::store::models::Version {
-                    id: 0,
-                    resource_id: 0,
-                    version: "0.5.0".to_string(),
-                    store_path: None,
-                    checksum: None,
-                    manifest_json: None,
-                    published_by: None,
-                    published_at: None,
-                },
-            )
-            .unwrap();
+        publish(
+            &store,
+            "agent",
+            "orchestrator",
+            "1.0.0",
+            Some(r#"{"skills":["notify"],"agents":["debugger"]}"#),
+        );
+        publish(&store, "skill", "notify", "0.3.0", None);
+        publish(&store, "agent", "debugger", "0.5.0", None);
 
-        let state = Arc::new(AppState {
-            started_at: std::time::Instant::now(),
-            store: Mutex::new(store),
-        });
-        let app = Router::new()
-            .nest("/api/v1", resource_routes())
-            .with_state(state);
-
-        let resp = send(app, "GET", "/api/v1/resolve/agent/orchestrator", None).await;
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/agent/orchestrator",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
         let order = body["order"].as_array().unwrap();
