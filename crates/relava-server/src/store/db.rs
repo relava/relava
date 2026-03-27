@@ -176,6 +176,45 @@ impl SqliteResourceStore {
         Ok(())
     }
 
+    /// Check database connectivity by running a lightweight query.
+    pub fn is_healthy(&self) -> bool {
+        self.conn
+            .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+            .is_ok()
+    }
+
+    /// Return resource counts grouped by type, e.g. `[("skill", 5), ("agent", 2)]`.
+    pub fn resource_counts_by_type(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT type, COUNT(*) FROM resources GROUP BY type ORDER BY type")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    /// Return the total number of versions across all resources.
+    pub fn total_version_count(&self) -> Result<i64, StoreError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM versions", [], |row| row.get(0))
+            .map_err(db_err)
+    }
+
+    /// Return the database page count × page size in bytes (0 for in-memory).
+    pub fn database_size_bytes(&self) -> Result<i64, StoreError> {
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(db_err)?;
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(db_err)?;
+        Ok(page_count * page_size)
+    }
+
     /// Update the FTS index for a resource after publish or update.
     fn update_fts_index(&self, resource_id: i64, resource: &Resource) -> Result<(), StoreError> {
         self.conn
@@ -876,5 +915,62 @@ mod tests {
             .unwrap();
         let result = store.get_version(resource.id, "9.9.9");
         assert!(matches!(result, Err(StoreError::NotFound(_))));
+    }
+
+    // -- Health / stats helpers tests --
+
+    #[test]
+    fn is_healthy_returns_true() {
+        let store = test_store();
+        assert!(store.is_healthy());
+    }
+
+    #[test]
+    fn resource_counts_by_type_empty() {
+        let store = test_store();
+        let counts = store.resource_counts_by_type().unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn resource_counts_by_type_groups_correctly() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+
+        let mut agent = sample_resource();
+        agent.name = "debugger".to_string();
+        agent.resource_type = "agent".to_string();
+        store.publish(&agent, &sample_version("1.0.0")).unwrap();
+
+        let counts = store.resource_counts_by_type().unwrap();
+        assert_eq!(counts.len(), 2);
+        assert!(counts.contains(&("agent".to_string(), 1)));
+        assert!(counts.contains(&("skill".to_string(), 1)));
+    }
+
+    #[test]
+    fn total_version_count_empty() {
+        let store = test_store();
+        assert_eq!(store.total_version_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn total_version_count_with_data() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+        store
+            .publish(&sample_resource(), &sample_version("2.0.0"))
+            .unwrap();
+        assert_eq!(store.total_version_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn database_size_bytes_is_nonnegative() {
+        let store = test_store();
+        assert!(store.database_size_bytes().unwrap() >= 0);
     }
 }
