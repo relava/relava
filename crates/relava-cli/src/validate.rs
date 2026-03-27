@@ -17,8 +17,8 @@ const MAX_TOTAL_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 // ---------------------------------------------------------------------------
 
 /// Options for the validate command.
-#[allow(dead_code)]
 pub struct ValidateOpts<'a> {
+    #[allow(dead_code)]
     pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub path: &'a Path,

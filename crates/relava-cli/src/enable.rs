@@ -6,8 +6,8 @@ use crate::disable::{self, relative_display};
 use crate::install;
 
 /// Options for the enable command.
-#[allow(dead_code)]
 pub struct EnableOpts<'a> {
+    #[allow(dead_code)]
     pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,

@@ -24,10 +24,10 @@ pub enum ApiError {
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ServerNotRunning(_url) => {
+            Self::ServerNotRunning(url) => {
                 write!(
                     f,
-                    "Registry server not running. Start it with `relava server start`."
+                    "Registry server not running at {url}. Start it with `relava server start`."
                 )
             }
             Self::NotFound(msg) => write!(f, "{msg}"),
@@ -99,40 +99,54 @@ impl ApiClient {
         }
     }
 
-    /// Send a GET request and return the raw response.
-    fn get(&self, path: &str) -> Result<reqwest::blocking::Response, ApiError> {
-        let url = format!("{}{path}", self.base_url);
-        self.client
-            .get(&url)
-            .send()
-            .map_err(|e| self.map_send_error(e))
+    /// Build the full URL for an API path.
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
     }
 
-    /// Parse a non-success response into an `ApiError`.
-    fn error_from_response(
+    /// Send a request builder, mapping connection errors appropriately.
+    fn send(
         &self,
-        status: reqwest::StatusCode,
+        builder: reqwest::blocking::RequestBuilder,
+    ) -> Result<reqwest::blocking::Response, ApiError> {
+        builder.send().map_err(|e| self.map_send_error(e))
+    }
+
+    /// Check that a response is successful, or convert it to an `ApiError`.
+    fn check_response(
+        &self,
         response: reqwest::blocking::Response,
-    ) -> ApiError {
-        let body: Option<ErrorBody> = response.json().ok();
-        let msg = body
+    ) -> Result<reqwest::blocking::Response, ApiError> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let msg = response
+            .json::<ErrorBody>()
+            .ok()
             .map(|b| b.error)
             .unwrap_or_else(|| format!("server returned status {status}"));
 
-        if status == reqwest::StatusCode::NOT_FOUND {
-            ApiError::NotFound(msg)
-        } else if status == reqwest::StatusCode::CONFLICT {
-            ApiError::AlreadyExists(msg)
-        } else if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
-            ApiError::ValidationError(msg)
-        } else {
-            ApiError::Http(msg)
-        }
+        Err(match status {
+            reqwest::StatusCode::NOT_FOUND => ApiError::NotFound(msg),
+            reqwest::StatusCode::CONFLICT => ApiError::AlreadyExists(msg),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY => ApiError::ValidationError(msg),
+            _ => ApiError::Http(msg),
+        })
+    }
+
+    /// Send a GET request, check for success, and parse the JSON body.
+    fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let response = self.send(self.client.get(self.url(path)))?;
+        self.check_response(response)?
+            .json()
+            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
     }
 
     /// Check that the server is reachable.
     pub fn health_check(&self) -> Result<(), ApiError> {
-        self.get("/api/v1/health")?;
+        let resp = self.send(self.client.get(self.url("/api/v1/health")))?;
+        self.check_response(resp)?;
         Ok(())
     }
 
@@ -145,14 +159,7 @@ impl ApiClient {
             Some(t) => format!("/api/v1/resources?type={t}"),
             None => "/api/v1/resources".to_string(),
         };
-        let response = self.get(&path)?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.error_from_response(status, response));
-        }
-        response
-            .json()
-            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+        self.get_json(&path)
     }
 
     /// Get a single resource by type and name.
@@ -161,14 +168,7 @@ impl ApiClient {
         resource_type: &str,
         name: &str,
     ) -> Result<ResourceResponse, ApiError> {
-        let response = self.get(&format!("/api/v1/resources/{resource_type}/{name}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.error_from_response(status, response));
-        }
-        response
-            .json()
-            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+        self.get_json(&format!("/api/v1/resources/{resource_type}/{name}"))
     }
 
     /// Create a resource in the registry.
@@ -179,43 +179,23 @@ impl ApiClient {
         name: &str,
         description: Option<&str>,
     ) -> Result<ResourceResponse, ApiError> {
-        let url = format!(
-            "{}/api/v1/resources/{resource_type}/{name}",
-            self.base_url
-        );
-        let body = serde_json::json!({ "description": description });
-        let response = self
+        let url = self.url(&format!("/api/v1/resources/{resource_type}/{name}"));
+        let builder = self
             .client
             .post(&url)
-            .json(&body)
-            .send()
-            .map_err(|e| self.map_send_error(e))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.error_from_response(status, response));
-        }
-        response
+            .json(&serde_json::json!({ "description": description }));
+        let response = self.send(builder)?;
+        self.check_response(response)?
             .json()
             .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
     }
 
     /// Delete a resource from the registry.
     pub fn delete_resource(&self, resource_type: &str, name: &str) -> Result<(), ApiError> {
-        let url = format!(
-            "{}/api/v1/resources/{resource_type}/{name}",
-            self.base_url
-        );
-        let response = self
-            .client
-            .delete(&url)
-            .send()
-            .map_err(|e| self.map_send_error(e))?;
-        let status = response.status();
-        if status == reqwest::StatusCode::NO_CONTENT || status.is_success() {
-            Ok(())
-        } else {
-            Err(self.error_from_response(status, response))
-        }
+        let url = self.url(&format!("/api/v1/resources/{resource_type}/{name}"));
+        let response = self.send(self.client.delete(&url))?;
+        self.check_response(response)?;
+        Ok(())
     }
 
     /// List versions for a resource.
@@ -225,16 +205,9 @@ impl ApiClient {
         resource_type: &str,
         name: &str,
     ) -> Result<Vec<VersionResponse>, ApiError> {
-        let response = self.get(&format!(
+        self.get_json(&format!(
             "/api/v1/resources/{resource_type}/{name}/versions"
-        ))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.error_from_response(status, response));
-        }
-        response
-            .json()
-            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+        ))
     }
 
     /// Get a specific version of a resource.
@@ -245,16 +218,9 @@ impl ApiClient {
         name: &str,
         version: &str,
     ) -> Result<VersionResponse, ApiError> {
-        let response = self.get(&format!(
+        self.get_json(&format!(
             "/api/v1/resources/{resource_type}/{name}/versions/{version}"
-        ))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.error_from_response(status, response));
-        }
-        response
-            .json()
-            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+        ))
     }
 }
 

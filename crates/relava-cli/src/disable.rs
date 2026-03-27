@@ -5,8 +5,8 @@ use relava_types::validate::{self, ResourceType};
 use crate::install;
 
 /// Options for the disable command.
-#[allow(dead_code)]
 pub struct DisableOpts<'a> {
+    #[allow(dead_code)]
     pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,
@@ -137,11 +137,14 @@ pub fn is_disabled(project_dir: &Path, resource_type: ResourceType, name: &str) 
 }
 
 /// Format a path relative to the project directory for display.
+///
+/// Normalises backslashes to forward slashes for consistent output
+/// across platforms.
 pub(crate) fn relative_display(path: &Path, project_dir: &Path) -> String {
     path.strip_prefix(project_dir)
         .unwrap_or(path)
         .to_string_lossy()
-        .to_string()
+        .replace('\\', "/")
 }
 
 #[cfg(test)]

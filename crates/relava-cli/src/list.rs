@@ -135,8 +135,9 @@ fn scan_local_only(
     let mut entries = Vec::new();
 
     // Active resources
-    if let Ok(read_dir) = std::fs::read_dir(&type_dir) {
-        for entry in read_dir.flatten() {
+    match std::fs::read_dir(&type_dir) {
+        Err(e) => eprintln!("[warn] cannot read {}: {e}", type_dir.display()),
+        Ok(read_dir) => for entry in read_dir.flatten() {
             let name = match extract_name(resource_type, &entry) {
                 Some(n) => n,
                 None => continue,
@@ -156,12 +157,15 @@ fn scan_local_only(
                 version,
                 status: "active".to_string(),
             });
-        }
+        },
     }
 
     // Disabled resources
     let disabled_dir = disable::disabled_dir_for(project_dir, resource_type);
-    if disabled_dir.is_dir() && let Ok(read_dir) = std::fs::read_dir(&disabled_dir) {
+    if disabled_dir.is_dir() {
+    match std::fs::read_dir(&disabled_dir) {
+        Err(e) => eprintln!("[warn] cannot read {}: {e}", disabled_dir.display()),
+        Ok(read_dir) => {
         for entry in read_dir.flatten() {
             let name = match extract_name(resource_type, &entry) {
                 Some(n) => n,
@@ -181,6 +185,8 @@ fn scan_local_only(
                 status: "disabled".to_string(),
             });
         }
+        },
+    }
     }
 
     entries

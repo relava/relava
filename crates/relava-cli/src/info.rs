@@ -4,6 +4,7 @@ use relava_types::manifest::{ProjectManifest, ResourceMeta};
 use relava_types::validate::{self, ResourceType};
 
 use crate::api_client::ApiClient;
+use crate::disable::relative_display;
 use crate::install;
 
 /// Options for the info command.
@@ -39,25 +40,16 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
 
     let client = ApiClient::new(opts.server_url);
     let rt_str = opts.resource_type.to_string();
-
-    // Query server for resource metadata
     let server_info = client.get_resource(&rt_str, opts.name);
 
-    // Determine local install status
     let is_installed = install::is_installed(opts.project_dir, opts.resource_type, opts.name);
     let install_path = install::resource_path(opts.project_dir, opts.resource_type, opts.name);
 
-    // Build result from server data + local data
-    match server_info {
+    let result = match server_info {
         Ok(resource) => {
             let (file_count, total_size, install_location) = if is_installed {
                 let (fc, ts) = compute_size(opts.resource_type, &install_path);
-                let loc = install_path
-                    .strip_prefix(opts.project_dir)
-                    .unwrap_or(&install_path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                (fc, ts, loc)
+                (fc, ts, relative_display(&install_path, opts.project_dir))
             } else {
                 (0, 0, String::new())
             };
@@ -66,22 +58,31 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
                 .or(resource.latest_version)
                 .unwrap_or_default();
 
-            let description = resource.description.unwrap_or_default();
-
-            // Get dependencies from local file if installed
-            let dependencies = if is_installed {
-                load_dependencies(opts.resource_type, &install_path)
+            let (_, dependencies) = if is_installed {
+                load_metadata(opts.resource_type, &install_path)
             } else {
-                Vec::new()
+                (String::new(), Vec::new())
             };
 
-            let status = if is_installed {
-                "installed".to_string()
-            } else {
-                "registered".to_string()
-            };
+            InfoResult {
+                name: opts.name.to_string(),
+                resource_type: rt_str,
+                version,
+                description: resource.description.unwrap_or_default(),
+                dependencies,
+                file_count,
+                total_size,
+                install_location,
+                status: if is_installed { "installed" } else { "registered" }.to_string(),
+            }
+        }
+        Err(crate::api_client::ApiError::NotFound(_)) if is_installed => {
+            let (file_count, total_size) = compute_size(opts.resource_type, &install_path);
+            let version = load_manifest_version(opts.project_dir, opts.resource_type, opts.name)
+                .unwrap_or_default();
+            let (description, dependencies) = load_metadata(opts.resource_type, &install_path);
 
-            let result = InfoResult {
+            InfoResult {
                 name: opts.name.to_string(),
                 resource_type: rt_str,
                 version,
@@ -89,48 +90,11 @@ pub fn run(opts: &InfoOpts) -> Result<InfoResult, String> {
                 dependencies,
                 file_count,
                 total_size,
-                install_location,
-                status,
-            };
-
-            if !opts.json {
-                print_info(&result);
+                install_location: relative_display(&install_path, opts.project_dir),
+                status: "installed".to_string(),
             }
-
-            Ok(result)
         }
-        Err(crate::api_client::ApiError::NotFound(_)) if is_installed => {
-            // Resource is installed locally but not in the registry
-            run_local(opts, &install_path)
-        }
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Fall back to local-only info when the server doesn't know about a resource
-/// that is installed locally.
-fn run_local(opts: &InfoOpts, install_path: &Path) -> Result<InfoResult, String> {
-    let (file_count, total_size) = compute_size(opts.resource_type, install_path);
-    let version =
-        load_manifest_version(opts.project_dir, opts.resource_type, opts.name).unwrap_or_default();
-    let (description, dependencies) = load_metadata(opts.resource_type, install_path);
-
-    let install_display = install_path
-        .strip_prefix(opts.project_dir)
-        .unwrap_or(install_path)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let result = InfoResult {
-        name: opts.name.to_string(),
-        resource_type: opts.resource_type.to_string(),
-        version,
-        description,
-        dependencies,
-        file_count,
-        total_size,
-        install_location: install_display,
-        status: "installed".to_string(),
+        Err(e) => return Err(e.to_string()),
     };
 
     if !opts.json {
@@ -210,12 +174,6 @@ fn load_manifest_version(
     };
     let v = section.get(name).cloned().unwrap_or_default();
     if v.is_empty() { None } else { Some(v) }
-}
-
-/// Extract dependencies from local resource metadata.
-fn load_dependencies(resource_type: ResourceType, path: &Path) -> Vec<String> {
-    let (_, deps) = load_metadata(resource_type, path);
-    deps
 }
 
 /// Extract description and dependencies from metadata.

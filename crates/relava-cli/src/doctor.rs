@@ -186,13 +186,7 @@ fn check_registry(checks: &mut Checks, opts: &DoctorOpts) {
             CheckStatus::Pass,
             format!("Server reachable at {}", opts.server_url),
         ),
-        Err(_) => (
-            CheckStatus::Fail,
-            format!(
-                "Registry server not running. Start it with `relava server start`. ({})",
-                opts.server_url
-            ),
-        ),
+        Err(e) => (CheckStatus::Fail, e.to_string()),
     };
     checks.push(CheckResult {
         name: "registry".into(),
@@ -412,7 +406,7 @@ mod tests {
 
     fn test_opts(root: &Path) -> DoctorOpts<'_> {
         DoctorOpts {
-            server_url: "http://localhost:99999",
+            server_url: "http://127.0.0.1:19999",
             project_dir: root,
             json: true,
             _verbose: false,
