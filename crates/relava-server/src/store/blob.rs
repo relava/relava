@@ -16,7 +16,7 @@ impl LocalBlobStore {
     }
 
     /// Resolve a relative path against the store root.
-    fn resolve(&self, path: &str) -> PathBuf {
+    pub fn resolve(&self, path: &str) -> PathBuf {
         self.root.join(path)
     }
 }

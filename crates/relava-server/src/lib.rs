@@ -18,16 +18,27 @@ use store::db::SqliteResourceStore;
 pub struct AppState {
     pub started_at: Instant,
     pub store: Mutex<SqliteResourceStore>,
+    pub blob_store: Option<store::LocalBlobStore>,
 }
 
 /// Build the Relava API router with shared state.
 ///
 /// Opens (or creates) the SQLite database at `db_path` and wires all routes.
+/// The blob store root defaults to `~/.relava/store/`.
 pub fn app(db_path: &std::path::Path) -> Result<Router, store::StoreError> {
     let store = SqliteResourceStore::open(db_path)?;
+
+    // Derive blob store root from db_path's parent (e.g., ~/.relava/store/)
+    let blob_root = db_path
+        .parent()
+        .map(|p| p.join("store"))
+        .unwrap_or_else(|| std::path::PathBuf::from("store"));
+    let blob_store = store::LocalBlobStore::new(blob_root);
+
     let state = Arc::new(AppState {
         started_at: Instant::now(),
         store: Mutex::new(store),
+        blob_store: Some(blob_store),
     });
 
     Ok(Router::new()
@@ -44,6 +55,25 @@ pub fn app_in_memory() -> Router {
     let state = Arc::new(AppState {
         started_at: Instant::now(),
         store: Mutex::new(store),
+        blob_store: None,
+    });
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/stats", get(stats))
+        .nest("/api/v1", routes::resource_routes())
+        .with_state(state)
+}
+
+/// Build a test router with an in-memory SQLite store and a temporary blob store.
+#[cfg(test)]
+pub fn app_with_blob_store(blob_root: std::path::PathBuf) -> Router {
+    let store = SqliteResourceStore::open_in_memory().unwrap();
+    let blob_store = store::LocalBlobStore::new(blob_root);
+    let state = Arc::new(AppState {
+        started_at: Instant::now(),
+        store: Mutex::new(store),
+        blob_store: Some(blob_store),
     });
 
     Router::new()
@@ -285,6 +315,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
 
         let app = Router::new()
@@ -329,6 +360,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
 
         // Poison the mutex by panicking while holding the lock.
@@ -368,6 +400,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
 
         // Poison the mutex.
