@@ -101,9 +101,7 @@ struct StatsResponse {
 
 /// Gather stats from the store, returning a structured response or an error message.
 fn gather_stats(store: &SqliteResourceStore) -> Result<StatsResponse, String> {
-    let counts = store
-        .resource_counts_by_type()
-        .map_err(|e| e.to_string())?;
+    let counts = store.resource_counts_by_type().map_err(|e| e.to_string())?;
     let version_count = store.total_version_count().map_err(|e| e.to_string())?;
     let database_size_bytes = store.database_size_bytes().map_err(|e| e.to_string())?;
 
@@ -294,7 +292,12 @@ mod tests {
             .with_state(state);
 
         let resp = app
-            .oneshot(Request::builder().uri("/stats").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -344,7 +347,12 @@ mod tests {
             .with_state(state);
 
         let resp = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -375,7 +383,12 @@ mod tests {
             .with_state(state);
 
         let resp = app
-            .oneshot(Request::builder().uri("/stats").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
