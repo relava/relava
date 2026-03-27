@@ -1,12 +1,12 @@
 ---
 name: relava
-description: Teaches Claude Code how to use the relava package manager for skills, agents, commands, and rules
+description: CLI reference for the relava local package manager for Claude Code resources (skills, agents, commands, rules). Use when installing, removing, publishing, updating, searching, or managing resources. Also use when setting up a new project (relava init), troubleshooting resource issues (relava doctor), managing the local registry server, or when a relava.toml exists and resources need syncing. Trigger whenever the user mentions relava, package management for Claude Code, or needs to find/share prompt-layer resources.
 version: 0.1.0
 ---
 
 # Relava
 
-Relava is a local package manager for Claude Code prompt-layer resources — skills, agents, commands, and rules. It runs a local registry server and provides a CLI to install, publish, update, and manage resources across projects. Use this skill whenever the user works with relava or needs to manage Claude Code resources.
+Relava is a local package manager for Claude Code prompt-layer resources — skills, agents, commands, and rules. It runs a local registry server and provides a CLI to install, publish, update, and manage resources across projects. Use relava commands whenever the user needs to install, discover, publish, or troubleshoot Claude Code resources.
 
 ## Commands Reference
 
@@ -160,13 +160,13 @@ security = "1.0.0"
 - Use `--save` with `install` and `remove` to keep `relava.toml` in sync automatically.
 - Run `relava install` with no arguments to install everything in the manifest.
 
-## Trigger Conditions
+## Proactive Suggestions
 
-Proactively suggest relava commands when:
+Once triggered, suggest the most relevant relava command for the situation:
 
-- The user asks about installing, managing, or finding Claude Code skills, agents, commands, or rules.
-- A project has a `relava.toml` and the user adds or removes prompt-layer resources.
-- The user mentions publishing or sharing a skill/agent/command/rule.
-- The user encounters issues with installed resources — suggest `relava doctor`.
-- A `relava.toml` exists but resources are not installed — suggest `relava install`.
-- The user creates a new project and needs to set up Claude Code resources — suggest `relava init`.
+- Project has no `relava.toml` → suggest `relava init`.
+- `relava.toml` exists but resources are not installed → suggest `relava install`.
+- User adds or removes prompt-layer resources → suggest `--save` to keep `relava.toml` in sync.
+- User mentions publishing or sharing a resource → suggest `relava validate` then `relava publish`.
+- User encounters issues with installed resources → suggest `relava doctor`.
+- User is looking for a resource → suggest `relava search`.
