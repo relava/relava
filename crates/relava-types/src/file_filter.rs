@@ -172,11 +172,7 @@ impl IgnorePatterns {
 ///
 /// Paths are matched as relative paths from the resource root. The `.relavaignore`
 /// file itself is never filtered out (it is always included in published resources).
-pub fn filter_ignored(
-    root: &Path,
-    files: Vec<PathBuf>,
-    patterns: &IgnorePatterns,
-) -> Vec<PathBuf> {
+pub fn filter_ignored(root: &Path, files: Vec<PathBuf>, patterns: &IgnorePatterns) -> Vec<PathBuf> {
     if patterns.is_empty() {
         return files;
     }
