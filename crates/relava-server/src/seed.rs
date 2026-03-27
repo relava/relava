@@ -110,14 +110,12 @@ fn seed_one(
     let is_reseed = match store.get_resource(None, bundled.name, bundled.resource_type) {
         Ok(existing) => {
             // Resource exists — compare versions
-            if let Some(ref latest) = existing.latest_version {
-                if let Ok(registry_version) = Version::parse(latest) {
-                    if registry_version >= embedded_version {
-                        // Registry has same or newer version — skip
-                        return Ok(());
-                    }
-                }
-                // Registry version is older or unparseable — update
+            if let Some(ref latest) = existing.latest_version
+                && let Ok(registry_version) = Version::parse(latest)
+                && registry_version >= embedded_version
+            {
+                // Registry has same or newer version — skip
+                return Ok(());
             }
             false
         }
