@@ -24,6 +24,7 @@ reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 colored = "3"
 comfy-table = "7"
 sha2 = "0.10"
+globset = "0.4"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["fs"] }
