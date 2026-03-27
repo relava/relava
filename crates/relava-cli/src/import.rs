@@ -526,7 +526,7 @@ mod tests {
         let result = run(&opts);
         // Expect a server connection error, not a version error
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not reachable"));
+        assert!(result.unwrap_err().contains("Registry server not running"));
     }
 
     #[test]

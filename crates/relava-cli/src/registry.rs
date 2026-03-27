@@ -21,10 +21,10 @@ pub enum RegistryError {
 impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ServerUnreachable(url) => {
+            Self::ServerUnreachable(_url) => {
                 write!(
                     f,
-                    "server not reachable at {url}. Run 'relava server start' first."
+                    "Registry server not running. Start it with `relava server start`."
                 )
             }
             Self::ResourceNotFound {
@@ -130,6 +130,7 @@ impl RegistryClient {
     ///
     /// Unlike other methods, any send failure (not just connection errors)
     /// is treated as "server unreachable" — this is intentional for health checks.
+    #[allow(dead_code)]
     pub fn health_check(&self) -> Result<(), RegistryError> {
         let url = format!("{}/api/v1/health", self.base_url);
         self.client
@@ -297,8 +298,8 @@ mod tests {
     fn registry_error_display_server_unreachable() {
         let err = RegistryError::ServerUnreachable("http://localhost:7420".to_string());
         let msg = err.to_string();
-        assert!(msg.contains("not reachable"));
-        assert!(msg.contains("localhost:7420"));
+        assert!(msg.contains("Registry server not running"));
+        assert!(msg.contains("relava server start"));
     }
 
     #[test]

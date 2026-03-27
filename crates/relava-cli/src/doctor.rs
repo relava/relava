@@ -3,8 +3,8 @@ use std::path::Path;
 use relava_types::manifest::ProjectManifest;
 use relava_types::validate::ResourceType;
 
+use crate::api_client::ApiClient;
 use crate::install;
-use crate::registry::RegistryClient;
 
 /// Options for the doctor command.
 pub struct DoctorOpts<'a> {
@@ -180,16 +180,13 @@ fn installed_names_on_disk(
 
 /// Check if the registry server is reachable.
 fn check_registry(checks: &mut Checks, opts: &DoctorOpts) {
-    let client = RegistryClient::new(opts.server_url);
+    let client = ApiClient::new(opts.server_url);
     let (status, message) = match client.health_check() {
         Ok(()) => (
             CheckStatus::Pass,
             format!("Server reachable at {}", opts.server_url),
         ),
-        Err(e) => (
-            CheckStatus::Fail,
-            format!("Server health check failed at {}: {e}", opts.server_url),
-        ),
+        Err(e) => (CheckStatus::Fail, e.to_string()),
     };
     checks.push(CheckResult {
         name: "registry".into(),
@@ -409,7 +406,7 @@ mod tests {
 
     fn test_opts(root: &Path) -> DoctorOpts<'_> {
         DoctorOpts {
-            server_url: "http://localhost:99999",
+            server_url: "http://127.0.0.1:19999",
             project_dir: root,
             json: true,
             _verbose: false,
@@ -428,7 +425,11 @@ mod tests {
 
         let registry_check = result.checks.iter().find(|c| c.name == "registry").unwrap();
         assert_eq!(registry_check.status, CheckStatus::Fail);
-        assert!(registry_check.message.contains("health check failed"));
+        assert!(
+            registry_check
+                .message
+                .contains("Registry server not running")
+        );
     }
 
     // -----------------------------------------------------------------------

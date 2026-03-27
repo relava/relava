@@ -6,6 +6,8 @@ use crate::install;
 
 /// Options for the disable command.
 pub struct DisableOpts<'a> {
+    #[allow(dead_code)]
+    pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,
     pub project_dir: &'a Path,
@@ -135,11 +137,14 @@ pub fn is_disabled(project_dir: &Path, resource_type: ResourceType, name: &str) 
 }
 
 /// Format a path relative to the project directory for display.
+///
+/// Normalises backslashes to forward slashes for consistent output
+/// across platforms.
 pub(crate) fn relative_display(path: &Path, project_dir: &Path) -> String {
     path.strip_prefix(project_dir)
         .unwrap_or(path)
         .to_string_lossy()
-        .to_string()
+        .replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -160,6 +165,7 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -185,6 +191,7 @@ mod tests {
         fs::write(agents_dir.join("debugger.md"), "# Debugger").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Agent,
             name: "debugger",
             project_dir: root.path(),
@@ -205,6 +212,7 @@ mod tests {
         fs::write(cmds_dir.join("deploy.md"), "# Deploy").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Command,
             name: "deploy",
             project_dir: root.path(),
@@ -225,6 +233,7 @@ mod tests {
         fs::write(rules_dir.join("no-console-log.md"), "# Rule").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Rule,
             name: "no-console-log",
             project_dir: root.path(),
@@ -245,6 +254,7 @@ mod tests {
         fs::write(disabled_dir.join("SKILL.md"), "# Denden").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -262,6 +272,7 @@ mod tests {
         let root = temp_dir();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "nonexistent",
             project_dir: root.path(),
@@ -278,6 +289,7 @@ mod tests {
         let root = temp_dir();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "../traversal",
             project_dir: root.path(),
@@ -302,6 +314,7 @@ mod tests {
         fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -322,6 +335,7 @@ mod tests {
         fs::write(skill_dir.join("templates/tmpl.md"), "template").unwrap();
 
         let opts = DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "myskill",
             project_dir: root.path(),

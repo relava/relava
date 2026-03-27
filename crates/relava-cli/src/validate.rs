@@ -18,6 +18,8 @@ const MAX_TOTAL_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 
 /// Options for the validate command.
 pub struct ValidateOpts<'a> {
+    #[allow(dead_code)]
+    pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub path: &'a Path,
     pub json: bool,
@@ -570,6 +572,7 @@ mod tests {
 
     fn test_opts(resource_type: ResourceType, path: &Path) -> ValidateOpts<'_> {
         ValidateOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type,
             path,
             json: true,

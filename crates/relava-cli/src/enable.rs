@@ -7,6 +7,8 @@ use crate::install;
 
 /// Options for the enable command.
 pub struct EnableOpts<'a> {
+    #[allow(dead_code)]
+    pub server_url: &'a str,
     pub resource_type: ResourceType,
     pub name: &'a str,
     pub project_dir: &'a Path,
@@ -117,6 +119,7 @@ mod tests {
         fs::write(disabled.join("SKILL.md"), "# Denden").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -137,6 +140,7 @@ mod tests {
         fs::write(disabled_dir.join("debugger.md"), "# Debugger").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Agent,
             name: "debugger",
             project_dir: root.path(),
@@ -157,6 +161,7 @@ mod tests {
         fs::write(disabled_dir.join("deploy.md"), "# Deploy").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Command,
             name: "deploy",
             project_dir: root.path(),
@@ -176,6 +181,7 @@ mod tests {
         fs::write(disabled_dir.join("no-console-log.md"), "# Rule").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Rule,
             name: "no-console-log",
             project_dir: root.path(),
@@ -195,6 +201,7 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -220,6 +227,7 @@ mod tests {
         fs::write(disabled.join("SKILL.md"), "# Disabled").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -236,6 +244,7 @@ mod tests {
         let root = temp_dir();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "nonexistent",
             project_dir: root.path(),
@@ -252,6 +261,7 @@ mod tests {
         let root = temp_dir();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "../traversal",
             project_dir: root.path(),
@@ -271,6 +281,7 @@ mod tests {
         fs::write(disabled.join("templates/tmpl.md"), "template").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "myskill",
             project_dir: root.path(),
@@ -307,6 +318,7 @@ mod tests {
 
         // Disable
         let disable_opts = crate::disable::DisableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -319,6 +331,7 @@ mod tests {
 
         // Enable
         let enable_opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "denden",
             project_dir: root.path(),
@@ -339,6 +352,7 @@ mod tests {
         fs::write(disabled.join("SKILL.md"), "# Only").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "only-skill",
             project_dir: root.path(),
@@ -366,6 +380,7 @@ mod tests {
         fs::write(disabled2.join("SKILL.md"), "# B").unwrap();
 
         let opts = EnableOpts {
+            server_url: "http://127.0.0.1:19999",
             resource_type: ResourceType::Skill,
             name: "skill-a",
             project_dir: root.path(),
