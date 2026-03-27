@@ -285,8 +285,9 @@ impl ApiClient {
     ) -> Result<PublishResponse, ApiError> {
         let url = self.url(&format!("/api/v1/resources/{resource_type}/{name}/publish"));
 
-        let mut form = reqwest::blocking::multipart::Form::new()
-            .text("metadata", serde_json::to_string(metadata).unwrap());
+        let metadata_json = serde_json::to_string(metadata)
+            .map_err(|e| ApiError::Http(format!("failed to serialize metadata: {e}")))?;
+        let mut form = reqwest::blocking::multipart::Form::new().text("metadata", metadata_json);
 
         for entry in files {
             let file_path = root.join(&entry.relative_path);

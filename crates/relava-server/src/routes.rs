@@ -442,37 +442,55 @@ async fn publish_resource(
     let mut file_data: Vec<(String, Vec<u8>)> = Vec::new();
     let mut total_size: u64 = 0;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let field_name = field.name().unwrap_or("").to_string();
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let field_name = field.name().unwrap_or("").to_string();
 
-        match field_name.as_str() {
-            "metadata" => {
-                let bytes = match field.bytes().await {
-                    Ok(b) => b,
-                    Err(e) => return validation_err(format!("failed to read metadata: {e}")),
-                };
-                metadata = match serde_json::from_slice(&bytes) {
-                    Ok(m) => Some(m),
-                    Err(e) => return validation_err(format!("invalid metadata JSON: {e}")),
-                };
-            }
-            "file" => {
-                let filename = field.file_name().unwrap_or("unknown").to_string();
-                let bytes = match field.bytes().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return validation_err(format!("failed to read file '{filename}': {e}"));
+                match field_name.as_str() {
+                    "metadata" => {
+                        let bytes = match field.bytes().await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                return validation_err(format!("failed to read metadata: {e}"));
+                            }
+                        };
+                        metadata = match serde_json::from_slice(&bytes) {
+                            Ok(m) => Some(m),
+                            Err(e) => return validation_err(format!("invalid metadata JSON: {e}")),
+                        };
                     }
-                };
-                total_size += bytes.len() as u64;
-                if total_size > MAX_PUBLISH_BODY as u64 {
-                    return validation_err("upload exceeds maximum size limit");
+                    "file" => {
+                        let filename = field.file_name().unwrap_or("unknown").to_string();
+
+                        // Path traversal protection
+                        if is_unsafe_path(&filename) {
+                            return validation_err(format!(
+                                "unsafe filename rejected: '{filename}'"
+                            ));
+                        }
+
+                        let bytes = match field.bytes().await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                return validation_err(format!(
+                                    "failed to read file '{filename}': {e}"
+                                ));
+                            }
+                        };
+                        total_size += bytes.len() as u64;
+                        if total_size > MAX_PUBLISH_BODY as u64 {
+                            return validation_err("upload exceeds maximum size limit");
+                        }
+                        file_data.push((filename, bytes.to_vec()));
+                    }
+                    _ => {
+                        // Ignore unknown fields
+                    }
                 }
-                file_data.push((filename, bytes.to_vec()));
             }
-            _ => {
-                // Ignore unknown fields
-            }
+            Ok(None) => break,
+            Err(e) => return validation_err(format!("multipart parse error: {e}")),
         }
     }
 
@@ -500,7 +518,17 @@ async fn publish_resource(
         return validation_err("total upload size exceeds 50 MB limit");
     }
 
-    // Verify checksums match
+    // Validate metadata paths for traversal attacks
+    for meta_file in &metadata.files {
+        if is_unsafe_path(&meta_file.path) {
+            return validation_err(format!(
+                "unsafe path in metadata rejected: '{}'",
+                meta_file.path
+            ));
+        }
+    }
+
+    // Verify checksums match (forward: metadata → uploads)
     for meta_file in &metadata.files {
         let uploaded = file_data.iter().find(|(name, _)| *name == meta_file.path);
         match uploaded {
@@ -519,6 +547,15 @@ async fn publish_resource(
                     meta_file.path
                 ));
             }
+        }
+    }
+
+    // Verify reverse: uploaded files must be declared in metadata
+    for (filename, _) in &file_data {
+        if !metadata.files.iter().any(|f| f.path == *filename) {
+            return validation_err(format!(
+                "file '{filename}' uploaded but not declared in metadata"
+            ));
         }
     }
 
@@ -644,6 +681,32 @@ async fn publish_resource(
         .into_response()
 }
 
+/// Build a tar archive from a list of `(path, data)` pairs.
+fn build_tar_archive(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, std::io::Error> {
+    let mut tar_data = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_data);
+        for (path, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, path, data.as_slice())?;
+        }
+        builder.finish()?;
+    }
+    Ok(tar_data)
+}
+
+/// Check if a path contains traversal attacks or absolute paths.
+fn is_unsafe_path(path: &str) -> bool {
+    path.is_empty()
+        || path.starts_with('/')
+        || path.starts_with('\\')
+        || path.contains("..")
+        || path.contains('\0')
+}
+
 /// Determine the version for a publish operation.
 ///
 /// 1. Try to extract version from frontmatter of the primary markdown file.
@@ -664,9 +727,12 @@ fn determine_version(
 
     if let Some((_, data)) = file_data.iter().find(|(f, _)| *f == primary_filename)
         && let Ok(content) = std::str::from_utf8(data)
-        && let Some(version) = extract_frontmatter_version(content)
     {
-        return Ok(version);
+        match extract_frontmatter_version(content) {
+            Ok(Some(version)) => return Ok(version),
+            Ok(None) => {} // No version in frontmatter, fall through to auto-increment
+            Err(e) => return Err(validation_err(e)),
+        }
     }
 
     // Auto-increment from latest
@@ -693,20 +759,28 @@ fn determine_version(
 }
 
 /// Extract version from YAML frontmatter.
-fn extract_frontmatter_version(content: &str) -> Option<String> {
+///
+/// Returns `Ok(Some(version))` if frontmatter has a version field,
+/// `Ok(None)` if no frontmatter or no version field,
+/// `Err` if frontmatter delimiters are present but YAML is malformed.
+fn extract_frontmatter_version(content: &str) -> Result<Option<String>, String> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return None;
+        return Ok(None);
     }
     let after_open = &trimmed[3..];
-    let end = after_open.find("\n---")?;
+    let Some(end) = after_open.find("\n---") else {
+        return Ok(None); // No closing delimiter
+    };
     let yaml_str = &after_open[..end];
 
-    let yaml_value: serde_json::Value = serde_yaml::from_str(yaml_str).ok()?;
-    yaml_value
+    let yaml_value: serde_json::Value =
+        serde_yaml::from_str(yaml_str).map_err(|e| format!("invalid frontmatter YAML: {e}"))?;
+
+    Ok(yaml_value
         .get("version")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| s.to_string()))
 }
 
 /// Compute SHA-256 hex digest of data.
@@ -795,20 +869,17 @@ async fn download_version(
     }
 
     // Build a tar archive
-    let mut tar_data = Vec::new();
-    {
-        let mut builder = tar::Builder::new(&mut tar_data);
-        for (path, data) in &files {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(data.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, path, data.as_slice())
-                .unwrap();
+    let tar_data = match build_tar_archive(&files) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("[relava-server] tar build error: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal server error")),
+            )
+                .into_response();
         }
-        builder.finish().unwrap();
-    }
+    };
 
     (
         StatusCode::OK,
@@ -2144,5 +2215,154 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::CREATED);
         let body = json_body(resp).await;
         assert_eq!(body["version"], "0.1.0");
+    }
+
+    // -- Path traversal protection tests --
+
+    #[tokio::test]
+    async fn publish_rejects_path_traversal_in_filename() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"evil content";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "../../etc/evil", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("../../etc/evil", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        assert!(body["error"].as_str().unwrap().contains("unsafe"));
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_absolute_path() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"evil";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "/etc/passwd", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("/etc/passwd", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // -- Undeclared file tests --
+
+    #[tokio::test]
+    async fn publish_rejects_undeclared_uploaded_file() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let sha = test_sha256(file_content);
+
+        // Metadata only declares SKILL.md but we also upload extra.md
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content), ("extra.md", b"undeclared")],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("not declared in metadata")
+        );
+    }
+
+    // -- No blob store tests --
+
+    #[tokio::test]
+    async fn publish_returns_error_without_blob_store() {
+        let app = test_app(); // No blob store
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("not configured for file storage")
+        );
+    }
+
+    // -- Declared but not uploaded --
+
+    #[tokio::test]
+    async fn publish_rejects_file_declared_but_not_uploaded() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [
+                {"path": "SKILL.md", "sha256": sha, "size": file_content.len()},
+                {"path": "missing.md", "sha256": "def", "size": 5},
+            ]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("declared in metadata but not uploaded")
+        );
     }
 }
