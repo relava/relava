@@ -101,9 +101,9 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
 
 | Crate | Contains | License |
 |-------|----------|---------|
-| `relava-types` | `manifest`, `validate`, `version` modules | Apache-2.0 |
-| `relava-cli` | `registry`, `cache`, `env_check`, `tools`, `install`, `init` | Apache-2.0 |
-| `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, GUI serving | ELv2 |
+| `relava-types` | `manifest`, `validate`, `version`, `file_filter` modules | Apache-2.0 |
+| `relava-cli` | `install`, `remove`, `update`, `list`, `info`, `search`, `publish`, `import`, `validate`, `init`, `doctor`, `disable`, `enable`, `resolve`, `cache_manage`, `self_update`, `update_check`, `bulk_install`, `lockfile`, `save`, `registry`, `cache`, `api_client`, `env_check`, `tools`, `output`, `server` | Apache-2.0 |
+| `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, dependency resolver, GUI serving | ELv2 |
 | `relava-server-ext` | Stub — future cloud/enterprise extensions | ELv2 |
 
 The split licensing keeps shared types and the CLI open source (Apache-2.0) while protecting the server against competing managed services (ELv2).
@@ -597,28 +597,33 @@ Base URL: `http://localhost:7420/api/v1`
 | `GET` | `/resources/:type/:name` | Get resource details |
 | `GET` | `/resources/:type/:name/versions` | List versions |
 | `GET` | `/resources/:type/:name/versions/:version` | Get specific version details |
-| `GET` | `/resources/:type/:name/versions/:version/download` | Download resource files as multipart response (used by `relava install`) |
-| `POST` | `/resources/:type/:name` | Publish a resource (multipart upload of directory contents) |
+| `GET` | `/resources/:type/:name/versions/:version/download` | Download resource files as JSON response (used by `relava install`) |
+| `GET` | `/resources/:type/:name/versions/:version/checksums` | Get file paths and SHA-256 checksums for a version |
+| `POST` | `/resources/:type/:name` | Create a resource entry |
+| `POST` | `/resources/:type/:name/publish` | Publish a resource version (multipart upload of directory contents) |
 | `DELETE` | `/resources/:type/:name` | Remove resource from registry |
 
-#### Resolution
+#### Resolution & Updates
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/resolve/:type/:name` | Resolve full dependency tree. Query: `?version=1.2.0`. Returns topologically sorted install order as JSON. Skills use DFS; agents use topological sort with cycle detection. |
+| `GET` | `/resolve/:type/:name` | Resolve full dependency tree. Query: `?version=1.2.0`. Returns topologically sorted install order as JSON. |
+| `POST` | `/updates/check` | Batch check for available updates. Accepts list of installed resources, returns available newer versions. |
 
 #### Server
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Server health check |
-| `GET` | `/stats` | Server statistics (resource count, project count, etc.) |
+| `GET` | `/health` | Server health check (status, version, uptime, database connectivity) |
+| `GET` | `/stats` | Server statistics (resource counts by type, version count, database size) |
+| `GET` | `/config` | Server configuration (host, port, data directory, cache directory, cache size) |
+| `POST` | `/cache/clean` | Clean server-side cache, returns bytes freed |
 
 #### GUI
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | Serve the GUI web application |
+| `GET` | `/` | Serve the GUI web application (SPA with fallback to `index.html`) |
 
 ---
 
@@ -670,10 +675,6 @@ Install a resource into the current project.
 | `--version <ver>` | Install a specific version (default: latest) |
 | `--save` | Write resource and version to `relava.toml` |
 | `--global` | Install to `~/.claude/` instead of project |
-| `--update` | Update to latest version if already installed |
-| `--recursive` | With `--update`, also update transitive dependencies |
-| `--force` | Replace existing installation even if same version |
-| `--skip-tools` | Skip system tool installation prompts |
 | `-y, --yes` | Auto-confirm all prompts (tool installs, etc.) |
 
 ```bash
@@ -688,12 +689,6 @@ $ relava install skill notify-slack --save
 
 # Install a specific version
 $ relava install skill notify-slack --version 0.2.0 --save
-
-# Update to latest, including dependencies
-$ relava install skill denden --update --recursive
-
-# Force reinstall, skip tool prompts
-$ relava install skill denden --force --skip-tools
 
 # Auto-confirm everything
 $ relava install skill code-review --save -y
@@ -711,9 +706,9 @@ $ relava install rule no-console-log
 What it does:
 1. Resolves resource and version from the registry server
 2. Resolves transitive dependencies from `metadata.relava` frontmatter
-3. Downloads resource files from the registry server
+3. Downloads resource files from the registry server (cached in `~/.relava/cache/`)
 4. Writes files to the correct Claude Code locations in the project
-5. Runs tool installation checks (unless `--skip-tools`)
+5. Runs tool installation checks (prompts user, skipped with `--yes`)
 6. Checks required env vars and warns if missing
 7. Updates `relava.lock` with installed versions and dependency graph
 8. If `--save` is used, writes the resource and version to `relava.toml`
@@ -814,9 +809,15 @@ Checking 4 resources...
   agent debugger: 0.5.0 (up to date)
 ```
 
-#### `relava publish <resource-type> <resource-name> [--path PATH]`
+#### `relava publish <resource-type> <resource-name> [--path PATH] [--force] [-y/--yes]`
 
 Publish a resource to the local Relava registry server.
+
+| Flag | Description |
+|------|-------------|
+| `--path <PATH>` | Custom source directory (default: standard location for resource type) |
+| `--force` | Skip change detection and publish regardless |
+| `-y, --yes` | Auto-confirm publish prompt (non-interactive) |
 
 ```bash
 $ relava publish skill denden
@@ -946,56 +947,73 @@ Binary detection uses the same heuristic as git: check the first 8,000 bytes for
 
 Enforced on both `relava validate` and `relava publish`.
 
-#### Startup Self-Update Check
+#### `relava disable <resource-type> <resource-name>`
 
-The CLI automatically checks for newer versions of itself at program startup, before any command runs.
-
-**Behavior:**
-1. Queries the GitHub Releases API for the latest relava version (throttled to once per 24 hours)
-2. If a newer version is available and stdout is a TTY, prompts the user:
-   ```
-   A new version of relava is available (current: 0.1.0, latest: 0.2.0). Update now? [Y/n]
-   ```
-3. If the user accepts (Enter or `y`), downloads the release, verifies the SHA-256 checksum, and atomically replaces both the `relava` and `relava-server` binaries
-4. If the user declines (`n`), continues normally with the current version
-
-**Non-interactive environments** (non-TTY, CI): prints a notice to stderr but does not block or prompt.
-
-**Suppressed by:** `--json`, `--no-update-check` flags.
-
-**Startup order:**
-1. Self-update check (blocking interactive prompt)
-2. Resource update check (non-blocking notification, see Issue #49)
-3. Command dispatch
-
-#### `relava cache clean [--older-than DURATION]`
-
-Clean cached downloads. Without flags, removes all cached entries. The optional `--older-than` flag removes only entries older than the given duration.
+Temporarily disable a resource without removing it from the project. Moves the resource to a `.disabled/` subdirectory so Claude Code no longer discovers it.
 
 ```bash
-$ relava cache clean
-Cleaned 42 cached entries (128 MB freed)
-
-$ relava cache clean --older-than 7d
-Cleaned 12 cached entries older than 7 days (34 MB freed)
+$ relava disable skill denden
+Disabled skill denden (moved to .claude/skills/.disabled/denden/)
 ```
 
-Duration format: `7d` (days), `24h` (hours), `30m` (minutes). Supports `--json` output.
+#### `relava enable <resource-type> <resource-name>`
+
+Re-enable a previously disabled resource. Restores it from `.disabled/` to its active location.
+
+```bash
+$ relava enable skill denden
+Enabled skill denden (restored to .claude/skills/denden/)
+```
 
 #### `relava cache status`
 
-Show cache disk usage and entry count.
+Show download cache disk usage and entry count.
 
 ```bash
 $ relava cache status
-Cache directory: /Users/you/.relava/cache
-  Entries: 42
-  Total size: 128 MB
-  Oldest entry: 2026-03-01
-  Cache limit: 500 MB
+Cache: ~/.relava/cache/
+  Size: 12.4 MB
+  Entries: 23
 ```
 
 Supports `--json` output. Automatic LRU eviction runs when cache exceeds the configured limit (default 500 MB).
+
+#### `relava cache clean [--older-than DURATION]`
+
+Remove cached downloads. Without flags, removes all cached entries. Optional `--older-than` flag with duration format (e.g., `7d`, `24h`, `30m`).
+
+```bash
+$ relava cache clean
+Cleaned 23 entries (12.4 MB freed)
+
+$ relava cache clean --older-than 7d
+Cleaned 8 entries (4.1 MB freed)
+```
+
+Supports `--json` output.
+
+### Startup Self-Update Check
+
+Before dispatching any command, the CLI performs an automatic self-update check:
+
+1. Checks the GitHub Releases API for newer CLI/server versions (throttled to once per 24 hours via `~/.relava/last_self_update_check`)
+2. If a newer version is available and stdout is a TTY, prompts the user with `[Y/n]`
+3. If the user accepts, downloads the new binaries, verifies SHA-256 checksums, and atomically replaces both `relava` and `relava-server` binaries
+4. In non-interactive environments (non-TTY, CI): prints a notice to stderr, does not block
+5. Suppressed by `--json`, `--no-update-check` flags
+
+**Startup order:**
+1. Self-update check (blocking interactive prompt)
+2. Resource update check (non-blocking notification)
+3. Command dispatch
+
+### Automatic Resource Update Check
+
+After read-only commands (`list`, `info`, `search`), the CLI checks for available resource updates:
+
+1. Sends a batch POST to the server with all installed resources and their versions (throttled to once per hour via `~/.relava/last_update_check`)
+2. If updates are available, prints a notification to stderr
+3. Suppressed by `--json`, `--no-update-check` flags
 
 ---
 
@@ -1011,25 +1029,31 @@ Supports `--json` output. Automatic LRU eviction runs when cache exceeds the con
 ### Pages
 
 #### Dashboard (`/`)
-- Registry stats: total resources published, by type
-- Recently published/updated resources
+- Statistics overview: total resource count, version count, database size
+- Resource type cards showing counts per type (skill, agent, command, rule)
+- Update banner showing count of recently published resources (last 24 hours)
+- Recently updated resources list (top 10, sorted by update time)
+- Empty state with `relava publish` command hint
 
 #### Resource Browser (`/browse`)
-- Search and filter all available resources
-- Filter by type (skill, agent, command, rule)
-- Sort by name, recently updated
-- Resource cards with description, version, type
+- Search input with 300ms debounce
+- Type filter dropdown (all types or specific: skill, agent, command, rule)
+- Sort dropdown (by name, recently updated, or version)
+- Responsive resource card grid (1 column mobile, 2 columns desktop)
+- Color-coded type badges: blue (skill), purple (agent), green (command), amber (rule)
+- Description with 2-line clamp, version, and updated date
 
-#### Resource Detail (`/resources/:type/:name`)
-- Full README rendered as markdown
-- Version history
-- Resource contents (file list)
-- Dependencies from `metadata.relava` frontmatter
+#### Resource Detail (`/browse/:type/:name`)
+- Header with resource name, type badge, version, description, and last updated date
+- Description rendered as GitHub-flavored markdown (via react-markdown)
+- Files section showing file paths with SHA-256 checksums
+- Dependencies section with clickable links to dependency detail pages
+- Version history with checksums and publication dates
 
 #### Settings (`/settings`)
-- Server configuration (port, data directory)
-- Cache management (clear cache, store size)
-```
+- Server status section: status badge, version, uptime, database connection indicator
+- Configuration section: host, port, data directory
+- Storage section: database size, cache size, Clean Cache button with feedback
 
 ---
 
@@ -1480,16 +1504,16 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 - ✅ 18. `relava update <type> <name>` — download new version from registry, overwrite project files — *depends on 9*
 - ✅ 19. `relava update --all` — check and update all installed resources in current project — *depends on 18*
 - ✅ 20. `relava doctor` — check server reachability, validate project relava.toml against installed files
-- ⬜ 21. `relava install relava.toml` — read project manifest, use `relava.lock` for exact versions if present, otherwise resolve fresh and create lockfile — *depends on 3, 9, 13*
-- ⬜ 22. `relava import <type> <path>` — scan existing resource directory/file, validate structure, publish to registry
-- ⬜ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), does not install — *depends on 12b*
-- ⬜ 22b. `relava validate <type> <path>` — offline pre-publish validation (slug, structure, frontmatter, file limits, file type filtering, semver, deps) — *depends on 4, 4a, 5*
-- ⬜ 22c. File type filtering — binary detection (null-byte check in first 8KB), enforce text-only for skills/commands/rules, any files for agents — *depends on 4*
-- ⬜ 22d. Rich console output — `comfy-table` for tables (list/search/info), `colored` for status tags, `--json` mode for structured output
-- ⬜ 23. Disable/enable mechanism — rename files with `.disabled` suffix
-- ⬜ 24. End-to-end integration testing — publish to local store, install into test project, list, update, remove cycle
+- ✅ 21. `relava install relava.toml` — bulk install from project manifest via `bulk_install` module, installs all declared resources with lockfile tracking — *depends on 3, 9, 13*
+- ✅ 22. `relava import <type> <path>` — scan existing resource directory/file, auto-derive name from path, validate structure, publish to registry with optional `--version` flag
+- ✅ 22a. `relava resolve <type> <name>` — display full dependency tree (tree view + `--json` output), optional `--version` flag, does not install — *depends on 12b*
+- ✅ 22b. `relava validate <type> <path>` — offline pre-publish validation (slug, structure, frontmatter, file limits, file type filtering, semver, `.relavaignore` support) — *depends on 4, 4a, 5*
+- ✅ 22c. File type filtering — binary detection (null-byte check in first 8KB), enforce text-only for skills/commands/rules, any files for agents, `.relavaignore` pattern support — *depends on 4*
+- ✅ 22d. Rich console output — `comfy-table` for tables (list/search/info), `colored` for status tags, `--json` mode for structured output via `output` module
+- ✅ 23. Disable/enable mechanism — moves resources to `.disabled/` subdirectory (e.g., `.claude/skills/.disabled/denden/`), detects conflicts, cleans up empty directories
+- ✅ 24. End-to-end integration testing — full lifecycle tests in `lifecycle_tests.rs` covering publish, install, list, update, remove cycle
 
-**Phase 1 Milestone**: Developer can publish a resource to local store, install it into a project, list installed resources, remove, and update — all via CLI.
+**Phase 1 Milestone**: ✅ Complete. Developer can publish a resource to local store, install it into a project, list installed resources, remove, and update — all via CLI.
 
 ---
 
@@ -1497,29 +1521,29 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 
 #### Week 4 — Server Foundation
 
-- ⬜ 25. HTTP server scaffolding — Axum + tokio async runtime, server startup/shutdown lifecycle
-- ⬜ 26. `relava server start` / `stop` / `status` commands — daemon mode, PID management, port binding
-- ⬜ 27. Resources REST endpoints — `GET /resources`, `GET /resources/:type/:name`, `POST /resources/:type/:name`, `DELETE /resources/:type/:name` — *depends on 25*
-- ⬜ 28. Resource versions REST endpoints — `GET /resources/:type/:name/versions`, `GET /resources/:type/:name/versions/:version` — *depends on 27*
-- ⬜ 30. CLI refactor — all operations go through REST API, fail with clear error if server is unreachable — *depends on 27*
+- ✅ 25. HTTP server scaffolding — Axum + tokio async runtime, server startup/shutdown lifecycle, Mutex-protected shared state
+- ✅ 26. `relava server start` / `stop` / `status` commands — daemon mode with PID file (`~/.relava/server.pid`), log redirection (`~/.relava/server.log`), port binding, `--gui-dir` option, platform-aware process management (Unix SIGTERM / Windows taskkill)
+- ✅ 27. Resources REST endpoints — `GET /resources`, `GET /resources/:type/:name`, `POST /resources/:type/:name`, `DELETE /resources/:type/:name` — *depends on 25*
+- ✅ 28. Resource versions REST endpoints — `GET /resources/:type/:name/versions`, `GET /resources/:type/:name/versions/:version`, `GET /resources/:type/:name/versions/:version/checksums` — *depends on 27*
+- ✅ 30. CLI refactor — all operations go through REST API via `api_client` module, fail with clear error if server is unreachable — *depends on 27*
 
 #### Week 5 — Server Features & Publish
 
-- ⬜ 31a. Resolution endpoint — `GET /api/v1/resolve/:type/:name?version=<ver>`, server-side topological sort with cycle detection for agents (mixed skill + agent dependencies), returns sorted install order as JSON — *depends on 27*
-- ⬜ 31b. CLI integration for server-side resolve — agent installs use the resolve endpoint for dependency resolution — *depends on 30, 31a*
-- ⬜ 32. Search endpoint with SQLite FTS5 — `GET /resources?q=search&type=skill`, full-text indexing of name + description + keywords
-- ⬜ 33. `relava search <query>` CLI command — search resources via server API — *depends on 32*
-- ⬜ 34. Health and stats endpoints — `GET /health`, `GET /stats` (resource count, version count)
-- ⬜ 35. `relava publish <type> <name>` — read manifest, validate slug + fields + file limits + file type filtering (100 files / 10MB each / 50MB total), compute SHA-256 per file, multipart HTTP POST to server — *depends on 27, 4a, 22c*
-- ⬜ 35a. Server-side publish validation — parse multipart payload, validate slug format, semver, version monotonicity, dependency existence, file limits, store in `~/.relava/store/` — *depends on 27*
-- ⬜ 35b. Download endpoint — `GET /resources/:type/:name/versions/:version/download` serves resource files for CLI install — *depends on 27*
-- ⬜ 35c. Version auto-increment — on publish without explicit version, auto-increment patch from latest published version — *depends on 35a*
-- ⬜ 36. `relava publish <type> <name> --path PATH` — publish from custom source directory — *depends on 35*
-- ⬜ 36a. `.relavaignore` support — exclude file patterns from publish/sync, works like `.gitignore`, combined with install record filtering — *depends on 35*
-- ⬜ 36b. Publish change detection — compare local resource directory against registry version using SHA-256 checksums, skip publish if no changes, show diff summary and prompt for confirmation — *depends on 35*
-- ⬜ 37. Static file serving — server serves files from GUI directory for future web app — *depends on 25*
+- ✅ 31a. Resolution endpoint — `GET /api/v1/resolve/:type/:name?version=<ver>`, server-side recursive resolution with cycle detection, returns topologically sorted install order as JSON — *depends on 27*
+- ✅ 31b. CLI integration for server-side resolve — `resolver` module uses the resolve endpoint for dependency resolution — *depends on 30, 31a*
+- ✅ 32. Search endpoint with SQLite FTS5 — `GET /resources?q=search&type=skill`, full-text indexing of name + description
+- ✅ 33. `relava search <query>` CLI command — search resources via server API with optional `--type` filter, truncates descriptions to 60 chars — *depends on 32*
+- ✅ 34. Health and stats endpoints — `GET /health` (status, version, uptime, database connectivity), `GET /stats` (resource counts by type, version count, database size), `GET /config` (server configuration), `POST /cache/clean`
+- ✅ 35. `relava publish <type> <name>` — read manifest, validate slug + fields + file limits + file type filtering (100 files / 10MB each / 50MB total), compute SHA-256 per file, base64-encoded JSON POST to server, `--force` and `--yes` flags — *depends on 27, 4a, 22c*
+- ✅ 35a. Server-side publish validation — parse JSON payload, validate slug format, semver, version monotonicity, file limits, store in `~/.relava/store/` via blob store — *depends on 27*
+- ✅ 35b. Download endpoint — `GET /resources/:type/:name/versions/:version/download` serves resource files as JSON for CLI install — *depends on 27*
+- ✅ 35c. Version auto-increment — on publish without explicit version, auto-increment patch from latest published version — *depends on 35a*
+- ✅ 36. `relava publish <type> <name> --path PATH` — publish from custom source directory — *depends on 35*
+- ✅ 36a. `.relavaignore` support — exclude file patterns from publish/sync, gitignore-style syntax via `file_filter` module in `relava-types` — *depends on 35*
+- ✅ 36b. Publish change detection — compare local resource directory against registry version using SHA-256 checksums, skip publish if no changes, show diff summary and prompt for confirmation, bypass with `--force` — *depends on 35*
+- ✅ 37. Static file serving — server serves SPA files from GUI directory with fallback to `index.html`, configurable via `--gui-dir` — *depends on 25*
 
-**Phase 2 Milestone**: CLI works against the running server. All operations available via REST API. Resources are published and installed through the server.
+**Phase 2 Milestone**: ✅ Complete. CLI works against the running server. All operations available via REST API. Resources are published and installed through the server.
 
 ---
 
@@ -1527,22 +1551,22 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 
 #### Week 6 — App Shell & Dashboard
 
-- ⬜ 38. React app scaffolding — Vite + Tailwind CSS + TanStack Query, project structure, API client setup
-- ⬜ 39. App shell — navigation header (Dashboard, Browse, Settings), layout components, routing
-- ⬜ 40. Dashboard page — registry stats (total resources by type), recently published/updated resources
+- ✅ 38. React app scaffolding — Vite 8 + Tailwind CSS 4 + TanStack React Query 5, React Router DOM 7, TypeScript 5.9, API client with typed endpoints
+- ✅ 39. App shell — navigation header (Dashboard, Browse, Settings), responsive Layout component with mobile hamburger menu, React Router with BrowserRouter
+- ✅ 40. Dashboard page — statistics overview (resource count, version count, database size), resource type cards with counts, update banner for recently published resources, recently updated list (top 10)
 
 #### Week 7 — Resource Browser & Details
 
-- ⬜ 43. Resource browser page — search input, type filter (skill/agent/command/rule), sort options, resource cards with description and version — *depends on 38*
-- ⬜ 44. Resource detail page — full README rendered as markdown (react-markdown), version history, file list, dependencies from frontmatter
+- ✅ 43. Resource browser page — search input with 300ms debounce, type filter dropdown, sort dropdown (name/updated/version), responsive card grid, color-coded type badges (blue/purple/green/amber) — *depends on 38*
+- ✅ 44. Resource detail page — description rendered as GitHub-flavored markdown (react-markdown + remark-gfm), version history with checksums, file list with SHA-256 hashes, dependency tree with clickable links
 
 #### Week 8 — Settings & Polish
 
-- ⬜ 47. Settings page — server configuration (port, data directory), cache size and cleanup
-- ⬜ 50. GUI build pipeline — production build, embed static assets into Rust binary (or serve from `~/.relava/gui/`)
-- ⬜ 51. Responsive design pass — ensure usable at various viewport sizes, visual polish
+- ✅ 47. Settings page — server status (badge, version, uptime, database connection), configuration (host, port, data directory), storage (database size, cache size, Clean Cache button with feedback)
+- ✅ 50. GUI build pipeline — Vite production build, served from `~/.relava/gui/` or configurable directory via `--gui-dir`, deploy script in package.json
+- ✅ 51. Responsive design pass — mobile-first Tailwind CSS, responsive navigation with auto-closing hamburger menu, responsive card grids, consistent spacing and typography
 
-**Phase 3 Milestone**: Developer can browse and search the registry through a web GUI at `localhost:7420`.
+**Phase 3 Milestone**: ✅ Complete. Developer can browse and search the registry through a web GUI at `localhost:7420`.
 
 ---
 
@@ -1553,9 +1577,9 @@ No week assignments — each feature is an independent work item.
 - ⬜ 52. Hook installation — read `settings.json`, merge hook definitions into event arrays (PreToolUse, PostToolUse, etc.)
 - ⬜ 53. Hook removal — remove specific hook entries from `settings.json`
 - ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `.md` files and frontmatter
-- ✅ 56. Auto-update notifications — CLI check (throttled once/hour, batch POST to server), GUI UpdateBanner component with amber badge. Suppressed by --no-update-check and --json flags
-- ✅ 58. Self-update check at startup — blocking interactive prompt at program startup (throttled once/24h), checks GitHub Releases API, SHA-256 verified atomic binary replacement for both relava and relava-server. Suppressed by --no-update-check, --json, or non-TTY
-- ✅ 59. Cache management — `relava cache clean [--older-than DURATION]` and `relava cache status` commands, LRU eviction policy, disk usage reporting with entry counts
+- ✅ 56. Auto-update notifications — CLI check (throttled once/hour, batch POST to server), GUI UpdateBanner component with amber badge. Suppressed by `--no-update-check` and `--json` flags
+- ✅ 58. Self-update check at startup — blocking interactive prompt at program startup (throttled once/24h), checks GitHub Releases API, SHA-256 verified atomic binary replacement for both `relava` and `relava-server`. Suppressed by `--no-update-check`, `--json`, or non-TTY
+- ✅ 59. Cache management — `relava cache clean [--older-than DURATION]` and `relava cache status` commands, LRU eviction policy, disk usage reporting with entry counts, duration parsing (e.g., `7d`, `24h`, `30m`)
 
 ---
 
