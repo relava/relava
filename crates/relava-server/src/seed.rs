@@ -149,7 +149,11 @@ fn seed_one(
         id: 0,
         scope: None,
         name: bundled.name.to_string(),
-        resource_type: bundled.resource_type.store_dir_name().trim_end_matches('s').to_string(),
+        resource_type: bundled
+            .resource_type
+            .store_dir_name()
+            .trim_end_matches('s')
+            .to_string(),
         description: Some(description),
         latest_version: None,
         metadata_json: None,
@@ -367,10 +371,7 @@ mod tests {
         assert_eq!(versions.len(), 1);
 
         let ver = &versions[0];
-        assert_eq!(
-            ver.store_path.as_deref(),
-            Some("skills/relava/0.1.0")
-        );
+        assert_eq!(ver.store_path.as_deref(), Some("skills/relava/0.1.0"));
         assert!(ver.checksum.is_some());
         assert_eq!(ver.published_by.as_deref(), Some("relava-server"));
 
