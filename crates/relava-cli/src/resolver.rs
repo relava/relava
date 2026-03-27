@@ -101,6 +101,7 @@ pub struct DepTreeNode {
 
 /// JSON output format for `relava resolve --json`.
 #[derive(Debug, serde::Serialize)]
+#[allow(dead_code)]
 pub struct ResolveJsonOutput {
     pub root: String,
     pub order: Vec<ResolvedDep>,
@@ -108,6 +109,7 @@ pub struct ResolveJsonOutput {
 
 /// Full result of dependency resolution.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ResolveResult {
     /// Leaf-first install order (root is the last element).
     pub install_order: Vec<ResolvedDep>,
@@ -117,6 +119,7 @@ pub struct ResolveResult {
 
 impl ResolveResult {
     /// Convert to JSON-friendly output matching the DESIGN.md format.
+    #[allow(dead_code)]
     pub fn to_json_output(&self) -> ResolveJsonOutput {
         ResolveJsonOutput {
             root: format!(
@@ -147,6 +150,7 @@ impl ResolveResult {
 
 impl DepTreeNode {
     /// Format the tree as a human-readable string with box-drawing characters.
+    #[allow(dead_code)]
     pub fn display(&self) -> String {
         let mut output = format!("{} {}@{}\n", self.resource_type, self.name, self.version);
         format_children(&self.dependencies, "", &mut output);
@@ -154,6 +158,7 @@ impl DepTreeNode {
     }
 }
 
+#[allow(dead_code)]
 fn format_children(children: &[DepTreeNode], prefix: &str, output: &mut String) {
     for (i, child) in children.iter().enumerate() {
         let is_last = i == children.len() - 1;

@@ -65,6 +65,23 @@ pub struct VersionResponse {
     pub published_at: Option<String>,
 }
 
+/// A single entry in a resolved dependency order returned by the server.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct ResolvedDepResponse {
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub name: String,
+    pub version: String,
+}
+
+/// Server-side resolution response containing topologically sorted
+/// install order.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct ResolveResponse {
+    pub root: String,
+    pub order: Vec<ResolvedDepResponse>,
+}
+
 /// JSON error body returned by the server.
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
@@ -208,6 +225,23 @@ impl ApiClient {
         self.get_json(&format!(
             "/api/v1/resources/{resource_type}/{name}/versions"
         ))
+    }
+
+    /// Resolve dependencies for a resource via the server-side resolver.
+    ///
+    /// Returns a topologically sorted install order (leaf-first) for the
+    /// resource and all its transitive dependencies.
+    pub fn resolve_deps(
+        &self,
+        resource_type: &str,
+        name: &str,
+        version: Option<&str>,
+    ) -> Result<ResolveResponse, ApiError> {
+        let path = match version {
+            Some(v) => format!("/api/v1/resolve/{resource_type}/{name}?version={v}"),
+            None => format!("/api/v1/resolve/{resource_type}/{name}"),
+        };
+        self.get_json(&path)
     }
 
     /// Get a specific version of a resource.
@@ -458,5 +492,90 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("http://custom:9999"), "got: {msg}");
         assert!(msg.contains("Registry server not running"));
+    }
+
+    // --- resolve_deps tests ---
+
+    #[test]
+    fn resolve_deps_returns_order() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resolve/skill/code-review")
+            .with_status(200)
+            .with_body(
+                r#"{"root":"skill/code-review@1.0.0","order":[{"type":"skill","name":"security-baseline","version":"0.5.0"},{"type":"skill","name":"code-review","version":"1.0.0"}]}"#,
+            )
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let result = client.resolve_deps("skill", "code-review", None).unwrap();
+        assert_eq!(result.root, "skill/code-review@1.0.0");
+        assert_eq!(result.order.len(), 2);
+        assert_eq!(result.order[0].name, "security-baseline");
+        assert_eq!(result.order[1].name, "code-review");
+    }
+
+    #[test]
+    fn resolve_deps_with_version() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resolve/skill/denden?version=1.0.0")
+            .with_status(200)
+            .with_body(
+                r#"{"root":"skill/denden@1.0.0","order":[{"type":"skill","name":"denden","version":"1.0.0"}]}"#,
+            )
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let result = client
+            .resolve_deps("skill", "denden", Some("1.0.0"))
+            .unwrap();
+        assert_eq!(result.root, "skill/denden@1.0.0");
+    }
+
+    #[test]
+    fn resolve_deps_not_found() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resolve/skill/missing")
+            .with_status(404)
+            .with_body(r#"{"error":"skill 'missing' not found"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client.resolve_deps("skill", "missing", None).unwrap_err();
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_deps_cycle_returns_validation_error() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resolve/skill/a")
+            .with_status(422)
+            .with_body(r#"{"error":"circular dependency detected: skill/a -> skill/b -> skill/a"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client.resolve_deps("skill", "a", None).unwrap_err();
+        assert!(matches!(err, ApiError::ValidationError(_)));
+        assert!(err.to_string().contains("circular dependency"));
+    }
+
+    #[test]
+    fn resolve_deps_server_unreachable() {
+        let client = ApiClient::new("http://127.0.0.1:19999");
+        let err = client.resolve_deps("skill", "denden", None).unwrap_err();
+        assert!(err.to_string().contains("Registry server not running"));
+    }
+
+    #[test]
+    fn resolve_response_deserializes() {
+        let json = r#"{"root":"agent/orchestrator@1.0.0","order":[{"type":"skill","name":"notify","version":"0.3.0"},{"type":"agent","name":"orchestrator","version":"1.0.0"}]}"#;
+        let resp: ResolveResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.root, "agent/orchestrator@1.0.0");
+        assert_eq!(resp.order.len(), 2);
+        assert_eq!(resp.order[0].resource_type, "skill");
+        assert_eq!(resp.order[0].name, "notify");
     }
 }

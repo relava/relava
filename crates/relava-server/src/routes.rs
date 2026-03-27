@@ -7,6 +7,7 @@ use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::resolve;
 use crate::store::db::SqliteResourceStore;
 use crate::store::models::{Resource, Version};
 use crate::store::traits::{ResourceStore, StoreError};
@@ -178,6 +179,11 @@ struct CreateBody {
     description: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ResolveQuery {
+    version: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -336,6 +342,37 @@ async fn get_version(
     }
 }
 
+/// GET /api/v1/resolve/:type/:name?version=<ver>
+async fn resolve_deps(
+    State(state): State<Arc<AppState>>,
+    Path((rtype, name)): Path<(String, String)>,
+    Query(query): Query<ResolveQuery>,
+) -> Response {
+    let rt = match validate_resource_path(&rtype, &name) {
+        Ok(rt) => rt,
+        Err(resp) => return resp,
+    };
+
+    let store = match acquire_store(&state) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match resolve::resolve(&*store, rt, &name, query.version.as_deref()) {
+        Ok(response) => Json(response).into_response(),
+        Err(resolve::ResolveError::NotFound(msg)) => {
+            (StatusCode::NOT_FOUND, Json(ApiError::new(msg))).into_response()
+        }
+        Err(e @ resolve::ResolveError::CyclicDependency(_))
+        | Err(e @ resolve::ResolveError::DepthLimitExceeded { .. }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new(e.to_string())),
+        )
+            .into_response(),
+        Err(resolve::ResolveError::Store(e)) => store_err(e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -355,6 +392,7 @@ pub fn resource_routes() -> Router<Arc<AppState>> {
             "/resources/{type}/{name}/versions/{version}",
             get(get_version),
         )
+        .route("/resolve/{type}/{name}", get(resolve_deps))
 }
 
 #[cfg(test)]
@@ -698,6 +736,199 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
         assert_eq!(body["version"], "1.0.0");
+    }
+
+    // -- Resolve endpoint --
+
+    /// Publish a resource+version into a store with minimal boilerplate.
+    fn publish(
+        store: &SqliteResourceStore,
+        rtype: &str,
+        name: &str,
+        ver: &str,
+        manifest: Option<&str>,
+    ) {
+        use crate::store::models::{Resource as R, Version as V};
+        store
+            .publish(
+                &R {
+                    id: 0,
+                    scope: None,
+                    name: name.to_string(),
+                    resource_type: rtype.to_string(),
+                    description: None,
+                    latest_version: None,
+                    metadata_json: None,
+                    updated_at: None,
+                },
+                &V {
+                    id: 0,
+                    resource_id: 0,
+                    version: ver.to_string(),
+                    store_path: None,
+                    checksum: None,
+                    manifest_json: manifest.map(str::to_string),
+                    published_by: None,
+                    published_at: None,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Build a test app from a pre-populated store.
+    fn app_with_store(store: SqliteResourceStore) -> Router {
+        let state = Arc::new(AppState {
+            started_at: std::time::Instant::now(),
+            store: Mutex::new(store),
+        });
+        Router::new()
+            .nest("/api/v1", resource_routes())
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn resolve_single_resource() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/denden",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["root"], "skill/denden@1.0.0");
+        let order = body["order"].as_array().unwrap();
+        assert_eq!(order.len(), 1);
+        assert_eq!(order[0]["name"], "denden");
+        assert_eq!(order[0]["type"], "skill");
+        assert_eq!(order[0]["version"], "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn resolve_with_dependencies() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(
+            &store,
+            "skill",
+            "code-review",
+            "1.0.0",
+            Some(r#"{"skills":["security-baseline"]}"#),
+        );
+        publish(&store, "skill", "security-baseline", "0.5.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/code-review",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let order = body["order"].as_array().unwrap();
+        assert_eq!(order.len(), 2);
+        assert_eq!(order[0]["name"], "security-baseline");
+        assert_eq!(order[1]["name"], "code-review");
+    }
+
+    #[tokio::test]
+    async fn resolve_with_version_query() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "1.0.0", None);
+        publish(&store, "skill", "denden", "2.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/denden?version=1.0.0",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["root"], "skill/denden@1.0.0");
+    }
+
+    #[tokio::test]
+    async fn resolve_not_found() {
+        let app = test_app();
+        let resp = send(app, "GET", "/api/v1/resolve/skill/nonexistent", None).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn resolve_cycle_returns_422() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "a", "1.0.0", Some(r#"{"skills":["b"]}"#));
+        publish(&store, "skill", "b", "1.0.0", Some(r#"{"skills":["a"]}"#));
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/skill/a",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        let error = body["error"].as_str().unwrap();
+        assert!(
+            error.contains("circular dependency"),
+            "expected cycle error, got: {error}"
+        );
+        assert!(error.contains("skill/a"));
+        assert!(error.contains("skill/b"));
+    }
+
+    #[tokio::test]
+    async fn resolve_invalid_type() {
+        let app = test_app();
+        let resp = send(app, "GET", "/api/v1/resolve/invalid/denden", None).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn resolve_invalid_slug() {
+        let app = test_app();
+        let resp = send(app, "GET", "/api/v1/resolve/skill/INVALID", None).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn resolve_mixed_deps_via_endpoint() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(
+            &store,
+            "agent",
+            "orchestrator",
+            "1.0.0",
+            Some(r#"{"skills":["notify"],"agents":["debugger"]}"#),
+        );
+        publish(&store, "skill", "notify", "0.3.0", None);
+        publish(&store, "agent", "debugger", "0.5.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resolve/agent/orchestrator",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let order = body["order"].as_array().unwrap();
+        assert_eq!(order.len(), 3);
+        // Leaf-first: notify and debugger before orchestrator
+        assert_eq!(order[0]["name"], "notify");
+        assert_eq!(order[0]["type"], "skill");
+        assert_eq!(order[1]["name"], "debugger");
+        assert_eq!(order[1]["type"], "agent");
+        assert_eq!(order[2]["name"], "orchestrator");
+        assert_eq!(order[2]["type"], "agent");
     }
 
     // -- Additional edge-case tests --
