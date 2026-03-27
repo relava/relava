@@ -17,6 +17,9 @@ Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `n
 - **Multi-platform** -- `agent_type` field supports Claude Code (MVP), with Codex and Gemini CLI planned
 - **Registry server** -- local HTTP server with REST API, web GUI for browsing, and SQLite metadata
 - **Non-invasive** -- writes to standard `.claude/` locations; remove Relava and your resources still work
+- **Auto-update notifications** -- checks for newer resource versions after commands, with GUI badge
+- **Self-updating CLI** -- automatic startup check for new CLI versions with interactive upgrade prompt
+- **Cache management** -- `relava cache clean` and `relava cache status` for download cache control
 - **Enterprise-ready architecture** -- REST-first design, storage abstraction traits, future support for SSO, scoping, and registry federation
 
 ## Quick Start
@@ -42,6 +45,10 @@ relava update --all
 
 # Publish to registry
 relava publish skill my-skill
+
+# Cache management
+relava cache status
+relava cache clean --older-than 7d
 
 # Check health
 relava doctor
@@ -165,7 +172,7 @@ The MVP is local-first, but the architecture is designed for enterprise:
 
 ## Status
 
-Relava is in active development. Week 1 (scaffolding, parsers, validation) is complete. See [DESIGN.md](DESIGN.md) for the full design document and implementation roadmap.
+Relava is in active development. Phases 1-3 are largely complete (CLI, registry server, GUI). See [DESIGN.md](DESIGN.md) for the full design document and implementation roadmap.
 
 ## License
 

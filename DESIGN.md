@@ -635,13 +635,14 @@ relava <verb> <resource-type> <resource-name>
 ### Global Options
 
 ```
-relava [--server URL] [--project PATH] [--verbose] [--json] <command>
+relava [--server URL] [--project PATH] [--verbose] [--json] [--no-update-check] <command>
 ```
 
 - `--server` — Override server URL (default: `http://localhost:7420`)
 - `--project` — Override project detection (default: current working directory)
 - `--verbose` — Show detailed output
 - `--json` — Output as JSON (for scripting)
+- `--no-update-check` — Suppress automatic update checks (both resource updates and self-update prompt)
 
 ### Commands
 
@@ -944,6 +945,57 @@ Different resource types have different file type rules:
 Binary detection uses the same heuristic as git: check the first 8,000 bytes for null bytes. If null bytes are found, the file is binary.
 
 Enforced on both `relava validate` and `relava publish`.
+
+#### Startup Self-Update Check
+
+The CLI automatically checks for newer versions of itself at program startup, before any command runs.
+
+**Behavior:**
+1. Queries the GitHub Releases API for the latest relava version (throttled to once per 24 hours)
+2. If a newer version is available and stdout is a TTY, prompts the user:
+   ```
+   A new version of relava is available (current: 0.1.0, latest: 0.2.0). Update now? [Y/n]
+   ```
+3. If the user accepts (Enter or `y`), downloads the release, verifies the SHA-256 checksum, and atomically replaces both the `relava` and `relava-server` binaries
+4. If the user declines (`n`), continues normally with the current version
+
+**Non-interactive environments** (non-TTY, CI): prints a notice to stderr but does not block or prompt.
+
+**Suppressed by:** `--json`, `--no-update-check` flags.
+
+**Startup order:**
+1. Self-update check (blocking interactive prompt)
+2. Resource update check (non-blocking notification, see Issue #49)
+3. Command dispatch
+
+#### `relava cache clean [--older-than DURATION]`
+
+Clean cached downloads. Without flags, removes all cached entries. The optional `--older-than` flag removes only entries older than the given duration.
+
+```bash
+$ relava cache clean
+Cleaned 42 cached entries (128 MB freed)
+
+$ relava cache clean --older-than 7d
+Cleaned 12 cached entries older than 7 days (34 MB freed)
+```
+
+Duration format: `7d` (days), `24h` (hours), `30m` (minutes). Supports `--json` output.
+
+#### `relava cache status`
+
+Show cache disk usage and entry count.
+
+```bash
+$ relava cache status
+Cache directory: /Users/you/.relava/cache
+  Entries: 42
+  Total size: 128 MB
+  Oldest entry: 2026-03-01
+  Cache limit: 500 MB
+```
+
+Supports `--json` output. Automatic LRU eviction runs when cache exceeds the configured limit (default 500 MB).
 
 ---
 
@@ -1501,9 +1553,9 @@ No week assignments — each feature is an independent work item.
 - ⬜ 52. Hook installation — read `settings.json`, merge hook definitions into event arrays (PreToolUse, PostToolUse, etc.)
 - ⬜ 53. Hook removal — remove specific hook entries from `settings.json`
 - ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `.md` files and frontmatter
-- ⬜ 56. Auto-update notifications — check for newer versions on server, surface in CLI and GUI
-- ⬜ 58. Self-update check and upgrade — `relava self-update`, check for newer CLI/server versions, download and replace binary
-- ⬜ 59. Cache management and cleanup — `relava cache clean`, automatic eviction policy, disk usage reporting
+- ✅ 56. Auto-update notifications — CLI check (throttled once/hour, batch POST to server), GUI UpdateBanner component with amber badge. Suppressed by --no-update-check and --json flags
+- ✅ 58. Self-update check at startup — blocking interactive prompt at program startup (throttled once/24h), checks GitHub Releases API, SHA-256 verified atomic binary replacement for both relava and relava-server. Suppressed by --no-update-check, --json, or non-TTY
+- ✅ 59. Cache management — `relava cache clean [--older-than DURATION]` and `relava cache status` commands, LRU eviction policy, disk usage reporting with entry counts
 
 ---
 
