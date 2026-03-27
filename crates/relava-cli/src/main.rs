@@ -22,6 +22,7 @@ mod search;
 mod server;
 mod tools;
 mod update;
+mod update_check;
 mod validate;
 
 #[cfg(test)]
@@ -49,6 +50,18 @@ fn exit_with_error(msg: &str, json: bool) -> ! {
         eprintln!("{msg}");
     }
     std::process::exit(1);
+}
+
+/// Run the automatic update check unless suppressed.
+///
+/// Called after commands like `list`, `info`, and `search` to notify the user
+/// about available updates. The check is throttled to at most once per hour.
+fn maybe_update_check(cli: &cli::Cli, project_dir: &std::path::Path) {
+    if cli.no_update_check || cli.json {
+        return;
+    }
+    let result = update_check::check_if_due(&cli.server, project_dir, None);
+    update_check::print_notification(&result);
 }
 
 /// Resolve the project directory from `--project` flag or current working directory.
@@ -232,7 +245,7 @@ fn main() {
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
-        Command::List { resource_type } => {
+        Command::List { ref resource_type } => {
             let rt = resource_type.as_ref().map(|s| {
                 install::parse_resource_type(s).unwrap_or_else(|e| exit_with_error(&e, cli.json))
             });
@@ -252,15 +265,16 @@ fn main() {
                     if cli.json {
                         print_json(&result);
                     }
+                    maybe_update_check(&cli, &project_dir);
                 }
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
         Command::Info {
-            resource_type,
-            name,
+            ref resource_type,
+            ref name,
         } => {
-            let rt = install::parse_resource_type(&resource_type)
+            let rt = install::parse_resource_type(resource_type)
                 .unwrap_or_else(|e| exit_with_error(&e, cli.json));
 
             let project_dir = resolve_project_dir(cli.project.as_deref());
@@ -268,7 +282,7 @@ fn main() {
             let opts = info::InfoOpts {
                 server_url: &cli.server,
                 resource_type: rt,
-                name: &name,
+                name,
                 project_dir: &project_dir,
                 json: cli.json,
                 _verbose: cli.verbose,
@@ -279,14 +293,20 @@ fn main() {
                     if cli.json {
                         print_json(&result);
                     }
+                    maybe_update_check(&cli, &project_dir);
                 }
                 Err(e) => exit_with_error(&e, cli.json),
             }
         }
-        Command::Search { query, r#type } => {
+        Command::Search {
+            ref query,
+            ref r#type,
+        } => {
+            let project_dir = resolve_project_dir(cli.project.as_deref());
+
             let opts = search::SearchOpts {
                 server_url: &cli.server,
-                query: &query,
+                query,
                 resource_type: r#type.as_deref(),
                 json: cli.json,
             };
@@ -296,6 +316,7 @@ fn main() {
                     if cli.json {
                         print_json(&result);
                     }
+                    maybe_update_check(&cli, &project_dir);
                 }
                 Err(e) => exit_with_error(&e, cli.json),
             }

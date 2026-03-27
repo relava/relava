@@ -352,6 +352,49 @@ impl ApiClient {
             .map(|b| b.to_vec())
             .map_err(|e| ApiError::Http(format!("failed to read response body: {e}")))
     }
+
+    /// Batch check for available updates.
+    ///
+    /// Sends a list of installed resources with their versions to
+    /// `POST /api/v1/updates/check` and returns which ones have newer
+    /// versions available. This is a single HTTP request regardless of
+    /// how many resources are checked.
+    pub fn check_updates(
+        &self,
+        resources: &[UpdateCheckEntry],
+    ) -> Result<UpdateCheckResponseBody, ApiError> {
+        let url = self.url("/api/v1/updates/check");
+        let body = serde_json::json!({ "resources": resources });
+        let response = self.send(self.client.post(&url).json(&body))?;
+        self.check_response(response)?
+            .json()
+            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+    }
+}
+
+/// A resource entry for the batch update check request.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpdateCheckEntry {
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub name: String,
+    pub version: String,
+}
+
+/// A single available update returned by the batch check.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct UpdateAvailableResponse {
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub name: String,
+    pub installed_version: String,
+    pub latest_version: String,
+}
+
+/// Response from `POST /api/v1/updates/check`.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct UpdateCheckResponseBody {
+    pub available: Vec<UpdateAvailableResponse>,
 }
 
 /// Server response from the publish endpoint.
@@ -744,5 +787,77 @@ mod tests {
         let resp: ChecksumsResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.version, "0.1.0");
         assert!(resp.files.is_empty());
+    }
+
+    // --- check_updates (batch endpoint) tests ---
+
+    #[test]
+    fn check_updates_server_unreachable() {
+        let client = ApiClient::new("http://127.0.0.1:19999");
+        let entries = vec![UpdateCheckEntry {
+            resource_type: "skill".to_string(),
+            name: "denden".to_string(),
+            version: "1.0.0".to_string(),
+        }];
+        let err = client.check_updates(&entries).unwrap_err();
+        assert!(err.to_string().contains("Registry server not running"));
+    }
+
+    #[test]
+    fn check_updates_returns_available() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("POST", "/api/v1/updates/check")
+            .with_status(200)
+            .with_body(
+                r#"{"available":[{"type":"skill","name":"denden","installed_version":"1.0.0","latest_version":"2.0.0"}]}"#,
+            )
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let entries = vec![UpdateCheckEntry {
+            resource_type: "skill".to_string(),
+            name: "denden".to_string(),
+            version: "1.0.0".to_string(),
+        }];
+        let result = client.check_updates(&entries).unwrap();
+        assert_eq!(result.available.len(), 1);
+        assert_eq!(result.available[0].name, "denden");
+        assert_eq!(result.available[0].latest_version, "2.0.0");
+    }
+
+    #[test]
+    fn check_updates_empty_when_up_to_date() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("POST", "/api/v1/updates/check")
+            .with_status(200)
+            .with_body(r#"{"available":[]}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let result = client.check_updates(&[]).unwrap();
+        assert!(result.available.is_empty());
+    }
+
+    #[test]
+    fn update_check_entry_serializes_type_field() {
+        let entry = UpdateCheckEntry {
+            resource_type: "skill".to_string(),
+            name: "denden".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""type":"skill"#));
+        assert!(!json.contains("resource_type"));
+    }
+
+    #[test]
+    fn update_check_response_deserializes() {
+        let json = r#"{"available":[{"type":"agent","name":"debugger","installed_version":"0.5.0","latest_version":"1.0.0"}]}"#;
+        let resp: UpdateCheckResponseBody = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.available.len(), 1);
+        assert_eq!(resp.available[0].resource_type, "agent");
+        assert_eq!(resp.available[0].name, "debugger");
     }
 }

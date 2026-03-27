@@ -1,5 +1,6 @@
 import { useStats } from '../hooks/useStats';
 import { useResources } from '../hooks/useResources';
+import { useUpdateCheck } from '../hooks/useUpdateCheck';
 import ErrorMessage from '../components/ErrorMessage';
 import LoadingSpinner from '../components/LoadingSpinner';
 import type { Resource } from '../api/client';
@@ -78,9 +79,29 @@ function sortByRecent(resources: Resource[]): Resource[] {
   });
 }
 
+function UpdateBanner({ count }: { count: number }) {
+  if (count === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-amber-400 text-white text-xs font-bold">
+          {count}
+        </span>
+        <p className="text-sm text-amber-800">
+          {count === 1
+            ? '1 resource was recently published.'
+            : `${count} resources were recently published.`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const stats = useStats();
   const resources = useResources();
+  const updates = useUpdateCheck();
 
   if (stats.isLoading || resources.isLoading) {
     return <LoadingSpinner />;
@@ -106,8 +127,12 @@ export default function Dashboard() {
   const allResources = resources.data ?? [];
   const recent = sortByRecent(allResources).slice(0, 10);
 
+  const updateCount = updates.data?.count ?? 0;
+
   return (
     <div className="space-y-8">
+      <UpdateBanner count={updateCount} />
+
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="mt-1 text-sm text-gray-500">

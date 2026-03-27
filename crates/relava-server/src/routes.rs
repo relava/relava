@@ -1058,6 +1058,92 @@ fn collect_blob_recursive(
 }
 
 // ---------------------------------------------------------------------------
+// Updates check
+// ---------------------------------------------------------------------------
+
+/// Request body for POST /api/v1/updates/check.
+#[derive(Deserialize)]
+struct UpdateCheckRequest {
+    /// Resources to check: list of `{ type, name, version }`.
+    resources: Vec<UpdateCheckEntry>,
+}
+
+#[derive(Deserialize)]
+struct UpdateCheckEntry {
+    #[serde(rename = "type")]
+    resource_type: String,
+    name: String,
+    version: String,
+}
+
+/// A single update available.
+#[derive(Serialize)]
+struct UpdateAvailable {
+    #[serde(rename = "type")]
+    resource_type: String,
+    name: String,
+    installed_version: String,
+    latest_version: String,
+}
+
+/// Response from POST /api/v1/updates/check.
+#[derive(Serialize)]
+struct UpdateCheckResponse {
+    available: Vec<UpdateAvailable>,
+}
+
+/// POST /api/v1/updates/check
+///
+/// Accepts a list of installed resources with their versions, and returns
+/// which ones have newer versions available. This endpoint is used by the
+/// CLI and GUI for update notifications.
+async fn check_updates(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UpdateCheckRequest>,
+) -> Response {
+    let store = match acquire_store(&state) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let mut available = Vec::new();
+
+    for entry in &body.resources {
+        // Skip entries with invalid version format
+        let installed = match SemVer::parse(&entry.version) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Skip entries with invalid resource type
+        let rt = match ResourceType::from_str(&entry.resource_type) {
+            Ok(rt) => rt,
+            Err(_) => continue,
+        };
+
+        // Look up the resource to get its latest version
+        let resource = match store.get_resource(None, &entry.name, rt) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if let Some(ref latest_str) = resource.latest_version
+            && let Ok(latest) = SemVer::parse(latest_str)
+            && latest > installed
+        {
+            available.push(UpdateAvailable {
+                resource_type: entry.resource_type.clone(),
+                name: entry.name.clone(),
+                installed_version: entry.version.clone(),
+                latest_version: latest_str.clone(),
+            });
+        }
+    }
+
+    Json(UpdateCheckResponse { available }).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -1089,6 +1175,7 @@ pub fn resource_routes() -> Router<Arc<AppState>> {
             get(get_version_checksums),
         )
         .route("/resolve/{type}/{name}", get(resolve_deps))
+        .route("/updates/check", axum::routing::post(check_updates))
 }
 
 #[cfg(test)]
@@ -2579,5 +2666,152 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- Updates check endpoint --
+
+    #[tokio::test]
+    async fn check_updates_empty_request() {
+        let app = test_app();
+        let resp = send(
+            app,
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_finds_newer_version() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "2.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"skill","name":"denden","version":"1.0.0"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let available = body["available"].as_array().unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0]["name"], "denden");
+        assert_eq!(available[0]["installed_version"], "1.0.0");
+        assert_eq!(available[0]["latest_version"], "2.0.0");
+    }
+
+    #[tokio::test]
+    async fn check_updates_up_to_date() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"skill","name":"denden","version":"1.0.0"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_skips_unknown_resource() {
+        let app = test_app();
+        let resp = send(
+            app,
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"skill","name":"nonexistent","version":"1.0.0"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_skips_invalid_version() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "2.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"skill","name":"denden","version":"invalid"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_skips_invalid_resource_type() {
+        let app = test_app();
+        let resp = send(
+            app,
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"invalid","name":"denden","version":"1.0.0"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_no_downgrade_notification() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        // Server has 1.0.0, client has 2.0.0 (newer) → no update reported
+        publish(&store, "skill", "denden", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"resources":[{"type":"skill","name":"denden","version":"2.0.0"}]}"#),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["available"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn check_updates_multiple_resources() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "2.0.0", None);
+        publish(&store, "agent", "debugger", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "POST",
+            "/api/v1/updates/check",
+            Some(
+                r#"{"resources":[
+                {"type":"skill","name":"denden","version":"1.0.0"},
+                {"type":"agent","name":"debugger","version":"1.0.0"},
+                {"type":"skill","name":"missing","version":"1.0.0"}
+            ]}"#,
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let available = body["available"].as_array().unwrap();
+        // denden has update (1.0.0 → 2.0.0), debugger is up-to-date, missing is skipped
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0]["name"], "denden");
     }
 }

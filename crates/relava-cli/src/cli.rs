@@ -22,6 +22,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Suppress automatic update availability check
+    #[arg(long, global = true)]
+    pub no_update_check: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
