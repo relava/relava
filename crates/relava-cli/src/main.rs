@@ -1,6 +1,7 @@
 mod api_client;
 mod bulk_install;
 mod cache;
+mod cache_manage;
 mod cli;
 mod disable;
 mod doctor;
@@ -29,7 +30,7 @@ mod validate;
 mod lifecycle_tests;
 
 use clap::Parser;
-use cli::{Cli, Command, ServerAction};
+use cli::{CacheAction, Cli, Command, ServerAction};
 
 /// Print a serializable value as pretty JSON. Exits on serialization failure.
 fn print_json(value: &impl serde::Serialize) {
@@ -557,6 +558,41 @@ fn main() {
                     }
                 }
                 Err(e) => exit_with_error(&e, cli.json),
+            }
+        }
+        Command::Cache { action } => {
+            let cache_dir =
+                cache_manage::default_cache_dir().unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            match action {
+                CacheAction::Clean { older_than } => {
+                    let duration = older_than.as_ref().map(|s| {
+                        cache_manage::parse_duration(s)
+                            .unwrap_or_else(|e| exit_with_error(&e, cli.json))
+                    });
+
+                    let opts = cache_manage::CacheCleanOpts {
+                        cache_dir: &cache_dir,
+                        older_than: duration,
+                        json: cli.json,
+                    };
+
+                    let result = cache_manage::clean(&opts);
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                CacheAction::Status => {
+                    let opts = cache_manage::CacheStatusOpts {
+                        cache_dir: &cache_dir,
+                        json: cli.json,
+                    };
+
+                    let result = cache_manage::status(&opts);
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
             }
         }
     }
