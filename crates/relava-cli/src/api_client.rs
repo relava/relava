@@ -339,4 +339,120 @@ mod tests {
         assert_eq!(resp.checksum.as_deref(), Some("abc123"));
         assert!(resp.published_at.is_none());
     }
+
+    // --- Mockito integration tests for status code mapping ---
+
+    #[test]
+    fn get_resource_returns_not_found_on_404() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources/skill/missing")
+            .with_status(404)
+            .with_body(r#"{"error":"skill 'missing' not found"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client.get_resource("skill", "missing").unwrap_err();
+        assert!(matches!(err, ApiError::NotFound(_)));
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn create_resource_returns_already_exists_on_409() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("POST", "/api/v1/resources/skill/denden")
+            .with_status(409)
+            .with_body(r#"{"error":"skill 'denden' already exists"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client
+            .create_resource("skill", "denden", None)
+            .unwrap_err();
+        assert!(matches!(err, ApiError::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn create_resource_returns_validation_error_on_422() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("POST", "/api/v1/resources/skill/bad")
+            .with_status(422)
+            .with_body(r#"{"error":"invalid slug format"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client.create_resource("skill", "bad", None).unwrap_err();
+        assert!(matches!(err, ApiError::ValidationError(_)));
+        assert!(err.to_string().contains("invalid slug"));
+    }
+
+    #[test]
+    fn get_resource_returns_http_error_on_500() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources/skill/broken")
+            .with_status(500)
+            .with_body(r#"{"error":"internal error"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let err = client.get_resource("skill", "broken").unwrap_err();
+        assert!(matches!(err, ApiError::Http(_)));
+    }
+
+    #[test]
+    fn list_resources_returns_populated_results() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources")
+            .with_status(200)
+            .with_body(
+                r#"[{"name":"denden","type":"skill","description":"A skill","latest_version":"1.0.0"}]"#,
+            )
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let resources = client.list_resources(None).unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].name, "denden");
+        assert_eq!(resources[0].resource_type, "skill");
+        assert_eq!(resources[0].latest_version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn list_resources_with_type_filter() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources?type=skill")
+            .with_status(200)
+            .with_body(r#"[{"name":"denden","type":"skill"}]"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        let resources = client.list_resources(Some("skill")).unwrap();
+        assert_eq!(resources.len(), 1);
+    }
+
+    #[test]
+    fn health_check_succeeds_on_200() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/health")
+            .with_status(200)
+            .with_body(r#"{"status":"ok"}"#)
+            .create();
+
+        let client = ApiClient::new(&server.url());
+        assert!(client.health_check().is_ok());
+    }
+
+    #[test]
+    fn server_not_running_includes_url() {
+        let err = ApiError::ServerNotRunning("http://custom:9999".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("http://custom:9999"), "got: {msg}");
+        assert!(msg.contains("Registry server not running"));
+    }
 }

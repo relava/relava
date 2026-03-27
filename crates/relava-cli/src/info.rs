@@ -185,7 +185,10 @@ fn load_metadata(resource_type: ResourceType, path: &Path) -> (String, Vec<Strin
 
     let content = match std::fs::read_to_string(&md_path) {
         Ok(c) => c,
-        Err(_) => return (String::new(), Vec::new()),
+        Err(e) => {
+            eprintln!("[warn] cannot read {}: {e}", md_path.display());
+            return (String::new(), Vec::new());
+        }
     };
 
     let meta = ResourceMeta::from_md(&content).unwrap_or_default();
@@ -433,5 +436,66 @@ mod tests {
             _verbose: false,
         };
         assert!(run(&opts).is_err());
+    }
+
+    #[test]
+    fn info_falls_back_to_local_when_not_found_in_server() {
+        let root = temp_dir();
+        let skill_dir = root.path().join(".claude/skills/local-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Local Skill\nA locally installed skill.",
+        )
+        .unwrap();
+
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources/skill/local-skill")
+            .with_status(404)
+            .with_body(r#"{"error":"skill 'local-skill' not found"}"#)
+            .create();
+
+        let opts = InfoOpts {
+            server_url: &server.url(),
+            resource_type: ResourceType::Skill,
+            name: "local-skill",
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.name, "local-skill");
+        assert_eq!(result.status, "installed");
+        assert_eq!(result.description, "A locally installed skill.");
+        assert!(result.file_count > 0);
+    }
+
+    #[test]
+    fn info_from_server_shows_registered_when_not_installed() {
+        let root = temp_dir();
+
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources/skill/remote-skill")
+            .with_status(200)
+            .with_body(
+                r#"{"name":"remote-skill","type":"skill","description":"A remote skill","latest_version":"1.0.0"}"#,
+            )
+            .create();
+
+        let opts = InfoOpts {
+            server_url: &server.url(),
+            resource_type: ResourceType::Skill,
+            name: "remote-skill",
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+        let result = run(&opts).unwrap();
+        assert_eq!(result.name, "remote-skill");
+        assert_eq!(result.status, "registered");
+        assert_eq!(result.description, "A remote skill");
+        assert_eq!(result.version, "1.0.0");
     }
 }

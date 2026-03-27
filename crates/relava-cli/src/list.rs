@@ -468,4 +468,50 @@ mod tests {
             "got: {err}"
         );
     }
+
+    #[test]
+    fn list_merges_server_and_local_resources() {
+        let root = temp_dir();
+
+        // Install a resource locally that IS in the server response
+        let skill_dir = root.path().join(".claude/skills/denden");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Denden").unwrap();
+
+        // Also install a resource locally that is NOT in the server response
+        let local_dir = root.path().join(".claude/skills/local-only");
+        fs::create_dir_all(&local_dir).unwrap();
+        fs::write(local_dir.join("SKILL.md"), "# Local").unwrap();
+
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/api/v1/resources")
+            .with_status(200)
+            .with_body(
+                r#"[{"name":"denden","type":"skill","latest_version":"2.0.0"},{"name":"remote-only","type":"agent"}]"#,
+            )
+            .create();
+
+        let opts = ListOpts {
+            server_url: &server.url(),
+            resource_type: None,
+            project_dir: root.path(),
+            json: true,
+            _verbose: false,
+        };
+
+        let result = run(&opts).unwrap();
+        // Should include: denden (server+local), remote-only (server), local-only (local)
+        assert!(result.resources.len() >= 3, "got {} resources", result.resources.len());
+
+        let denden = result.resources.iter().find(|r| r.name == "denden").unwrap();
+        assert_eq!(denden.status, "active"); // installed locally
+        assert_eq!(denden.version, "2.0.0"); // from server
+
+        let remote = result.resources.iter().find(|r| r.name == "remote-only").unwrap();
+        assert_eq!(remote.status, "registered"); // not installed locally
+
+        let local = result.resources.iter().find(|r| r.name == "local-only").unwrap();
+        assert_eq!(local.status, "active"); // installed locally, not in server
+    }
 }
