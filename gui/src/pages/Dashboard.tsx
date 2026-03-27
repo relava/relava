@@ -79,6 +79,10 @@ function sortByRecent(resources: Resource[]): Resource[] {
   });
 }
 
+// NOTE: The server-side GUI has no project context (no relava.toml), so it
+// cannot compare installed vs. latest versions. Instead it shows a count of
+// recently published resources as a proxy for "updates available". This is
+// intentional — the CLI performs the real per-project update check.
 function UpdateBanner({ count }: { count: number }) {
   if (count === 0) return null;
 
@@ -127,11 +131,13 @@ export default function Dashboard() {
   const allResources = resources.data ?? [];
   const recent = sortByRecent(allResources).slice(0, 10);
 
-  const updateCount = updates.data?.count ?? 0;
+  // Hide the update banner entirely when the check failed — showing
+  // count=0 would be misleading (we don't know, not "none available").
+  const updateCount = updates.error ? null : (updates.data?.count ?? 0);
 
   return (
     <div className="space-y-8">
-      <UpdateBanner count={updateCount} />
+      {updateCount !== null && <UpdateBanner count={updateCount} />}
 
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>

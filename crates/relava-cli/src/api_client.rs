@@ -97,11 +97,19 @@ pub struct ApiClient {
 impl ApiClient {
     /// Create a new API client pointing at the given server URL.
     pub fn new(server_url: &str) -> Self {
+        Self::with_timeout(server_url, std::time::Duration::from_secs(10))
+    }
+
+    /// Create a new API client with a custom timeout.
+    ///
+    /// Used by the background update check to avoid blocking primary commands
+    /// if the server is slow (e.g. 2–3 seconds instead of the default 10).
+    pub fn with_timeout(server_url: &str, timeout: std::time::Duration) -> Self {
         let base_url = server_url.trim_end_matches('/').to_string();
         Self {
             base_url,
             client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(timeout)
                 .build()
                 .expect("failed to build HTTP client"),
         }

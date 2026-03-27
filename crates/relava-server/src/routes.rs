@@ -1124,7 +1124,14 @@ async fn check_updates(
         // Look up the resource to get its latest version
         let resource = match store.get_resource(None, &entry.name, rt) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(StoreError::NotFound(_)) => continue,
+            Err(e) => {
+                eprintln!(
+                    "[relava-server] update check: error looking up {}/{}: {e}",
+                    entry.resource_type, entry.name
+                );
+                continue;
+            }
         };
 
         if let Some(ref latest_str) = resource.latest_version
@@ -2813,5 +2820,23 @@ mod tests {
         // denden has update (1.0.0 → 2.0.0), debugger is up-to-date, missing is skipped
         assert_eq!(available.len(), 1);
         assert_eq!(available[0]["name"], "denden");
+    }
+
+    #[tokio::test]
+    async fn check_updates_malformed_json_returns_error() {
+        let app = test_app();
+        let resp = send(
+            app,
+            "POST",
+            "/api/v1/updates/check",
+            Some(r#"{"not valid json"#),
+        )
+        .await;
+        // Axum returns 400 (Bad Request) or 422 for invalid JSON bodies
+        let status = resp.status().as_u16();
+        assert!(
+            status == 400 || status == 422,
+            "expected 400 or 422 for malformed JSON, got {status}"
+        );
     }
 }

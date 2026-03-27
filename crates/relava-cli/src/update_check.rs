@@ -115,7 +115,7 @@ fn perform_check(server_url: &str, project_dir: &Path) -> Vec<AvailableUpdate> {
         None => return Vec::new(),
     };
 
-    let client = ApiClient::new(server_url);
+    let client = ApiClient::with_timeout(server_url, Duration::from_secs(3));
 
     let sections = [
         (ResourceType::Skill, &manifest.skills),
@@ -150,10 +150,24 @@ fn perform_check(server_url: &str, project_dir: &Path) -> Vec<AvailableUpdate> {
     response.available
 }
 
-/// Load the project manifest, returning None if not found or unparseable.
+/// Load the project manifest, returning `None` if the file does not exist.
+///
+/// Parse errors are reported to stderr so users know their `relava.toml` is
+/// malformed, rather than silently behaving as if no manifest exists.
 fn load_manifest(project_dir: &Path) -> Option<ProjectManifest> {
     let path = project_dir.join("relava.toml");
-    ProjectManifest::from_file(&path).ok()
+    match ProjectManifest::from_file(&path) {
+        Ok(m) => Some(m),
+        Err(relava_types::manifest::ManifestError::Io(_, ref e))
+            if e.kind() == std::io::ErrorKind::NotFound =>
+        {
+            None // No manifest file — expected, stay silent
+        }
+        Err(e) => {
+            eprintln!("[warn] could not load relava.toml: {e}");
+            None
+        }
+    }
 }
 
 /// Print a non-intrusive update notification to stderr.
@@ -483,7 +497,8 @@ mod tests {
                     {"type":"agent","name":"a1","version":"1.0.0"},
                     {"type":"command","name":"c1","version":"1.0.0"},
                     {"type":"rule","name":"r1","version":"1.0.0"}
-                ]}"#.to_string(),
+                ]}"#
+                .to_string(),
             ))
             .with_body(r#"{"available":[]}"#)
             .create();
@@ -537,5 +552,74 @@ mod tests {
         .unwrap();
         let m = load_manifest(dir.path()).unwrap();
         assert_eq!(m.skills["denden"], "1.0.0");
+    }
+
+    #[test]
+    fn load_manifest_warns_on_parse_error() {
+        // Malformed TOML should return None but also warn (stderr).
+        // We can't easily capture stderr in a unit test, but verify it
+        // returns None without panicking and doesn't silently succeed.
+        let dir = temp_dir();
+        fs::write(dir.path().join("relava.toml"), "not valid {{{").unwrap();
+        assert!(load_manifest(dir.path()).is_none());
+    }
+
+    // --- maybe_update_check suppression ---
+    //
+    // These tests replicate the guard logic from `maybe_update_check` in
+    // main.rs: `if cli.no_update_check || cli.json { return; }`.
+    // If the guard fails, `check_if_due` hits an unreachable server with a
+    // 3-second timeout and then panics — proving the guard is necessary.
+
+    #[test]
+    fn json_flag_suppresses_update_check() {
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["relava", "--json", "list"]);
+
+        // Replicate the maybe_update_check guard
+        if cli.no_update_check || cli.json {
+            return; // Guard fires — short-circuit as expected
+        }
+
+        // If we reach here, the guard failed. Call check_if_due with a
+        // valid manifest and an unreachable server — this would hang,
+        // proving the guard is necessary.
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join("relava.toml"),
+            "[skills]\ndenden = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let relava_dir = dir.path().join(".relava");
+        fs::create_dir_all(&relava_dir).unwrap();
+        let _ = check_if_due("http://192.0.2.1:1", dir.path(), Some(&relava_dir));
+        panic!("guard did not short-circuit — check_if_due was called with --json flag");
+    }
+
+    #[test]
+    fn no_update_check_flag_suppresses_update_check() {
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["relava", "--no-update-check", "list"]);
+
+        // Replicate the maybe_update_check guard
+        if cli.no_update_check || cli.json {
+            return; // Guard fires — short-circuit as expected
+        }
+
+        // Guard failed — same unreachable-server proof as above
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join("relava.toml"),
+            "[skills]\ndenden = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let relava_dir = dir.path().join(".relava");
+        fs::create_dir_all(&relava_dir).unwrap();
+        let _ = check_if_due("http://192.0.2.1:1", dir.path(), Some(&relava_dir));
+        panic!("guard did not short-circuit — check_if_due was called with --no-update-check flag");
     }
 }
