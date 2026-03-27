@@ -270,6 +270,81 @@ impl ApiClient {
             "/api/v1/resources/{resource_type}/{name}/versions/{version}"
         ))
     }
+
+    /// Publish a resource via multipart upload.
+    ///
+    /// Sends metadata JSON and all resource files as a multipart form to
+    /// `POST /api/v1/resources/:type/:name/publish`.
+    pub fn publish(
+        &self,
+        resource_type: relava_types::validate::ResourceType,
+        name: &str,
+        root: &std::path::Path,
+        files: &[crate::publish::FileEntry],
+        metadata: &serde_json::Value,
+    ) -> Result<PublishResponse, ApiError> {
+        let url = self.url(&format!("/api/v1/resources/{resource_type}/{name}/publish"));
+
+        let mut form = reqwest::blocking::multipart::Form::new()
+            .text("metadata", serde_json::to_string(metadata).unwrap());
+
+        for entry in files {
+            let file_path = root.join(&entry.relative_path);
+            let data = std::fs::read(&file_path).map_err(|e| {
+                ApiError::Http(format!("cannot read '{}': {e}", file_path.display()))
+            })?;
+
+            let part = reqwest::blocking::multipart::Part::bytes(data)
+                .file_name(entry.relative_path.clone())
+                .mime_str("application/octet-stream")
+                .map_err(|e| ApiError::Http(format!("multipart error: {e}")))?;
+
+            form = form.part("file", part);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .send()
+            .map_err(|e| self.map_send_error(e))?;
+
+        self.check_response(response)?
+            .json()
+            .map_err(|e| ApiError::Http(format!("failed to parse response: {e}")))
+    }
+
+    /// Download resource files for a specific version.
+    ///
+    /// Returns the raw tar bytes from
+    /// `GET /api/v1/resources/:type/:name/versions/:version/download`.
+    #[allow(dead_code)]
+    pub fn download_version(
+        &self,
+        resource_type: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Vec<u8>, ApiError> {
+        let url = self.url(&format!(
+            "/api/v1/resources/{resource_type}/{name}/versions/{version}/download"
+        ));
+
+        let response = self.send(self.client.get(&url))?;
+        let response = self.check_response(response)?;
+        response
+            .bytes()
+            .map(|b| b.to_vec())
+            .map_err(|e| ApiError::Http(format!("failed to read response body: {e}")))
+    }
+}
+
+/// Server response from the publish endpoint.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct PublishResponse {
+    pub version: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub resource_type: String,
 }
 
 #[cfg(test)]

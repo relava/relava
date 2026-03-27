@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, routing::get};
@@ -10,8 +10,9 @@ use crate::AppState;
 use crate::resolve;
 use crate::store::db::SqliteResourceStore;
 use crate::store::models::{Resource, Version};
-use crate::store::traits::{ResourceStore, StoreError};
+use crate::store::traits::{BlobStore, ResourceStore, StoreError};
 use relava_types::validate::{ResourceType, validate_slug, validate_version};
+use relava_types::version::Version as SemVer;
 
 // ---------------------------------------------------------------------------
 // Error handling
@@ -386,6 +387,518 @@ async fn resolve_deps(
 }
 
 // ---------------------------------------------------------------------------
+// Publish types
+// ---------------------------------------------------------------------------
+
+/// Metadata for a published file (sent as the "metadata" multipart field).
+#[derive(Debug, Deserialize)]
+struct PublishMetadata {
+    files: Vec<PublishFileEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishFileEntry {
+    path: String,
+    sha256: String,
+    #[allow(dead_code)]
+    size: u64,
+}
+
+/// Response from the publish endpoint.
+#[derive(Debug, Serialize)]
+struct PublishResponseBody {
+    name: String,
+    #[serde(rename = "type")]
+    resource_type: String,
+    version: String,
+}
+
+// ---------------------------------------------------------------------------
+// Publish handler
+// ---------------------------------------------------------------------------
+
+/// Maximum body size for publish uploads (50 MB + overhead).
+const MAX_PUBLISH_BODY: usize = 55 * 1024 * 1024;
+
+/// POST /api/v1/resources/:type/:name/publish
+///
+/// Accepts a multipart form with:
+/// - `metadata`: JSON with file checksums
+/// - `file` (repeated): resource files
+///
+/// Auto-increments the patch version if no version is found in frontmatter.
+async fn publish_resource(
+    State(state): State<Arc<AppState>>,
+    Path((rtype, name)): Path<(String, String)>,
+    mut multipart: Multipart,
+) -> Response {
+    let rt = match validate_resource_path(&rtype, &name) {
+        Ok(rt) => rt,
+        Err(resp) => return resp,
+    };
+
+    // Parse multipart fields
+    let mut metadata: Option<PublishMetadata> = None;
+    let mut file_data: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total_size: u64 = 0;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let field_name = field.name().unwrap_or("").to_string();
+
+        match field_name.as_str() {
+            "metadata" => {
+                let bytes = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => return validation_err(format!("failed to read metadata: {e}")),
+                };
+                metadata = match serde_json::from_slice(&bytes) {
+                    Ok(m) => Some(m),
+                    Err(e) => return validation_err(format!("invalid metadata JSON: {e}")),
+                };
+            }
+            "file" => {
+                let filename = field.file_name().unwrap_or("unknown").to_string();
+                let bytes = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return validation_err(format!("failed to read file '{filename}': {e}"));
+                    }
+                };
+                total_size += bytes.len() as u64;
+                if total_size > MAX_PUBLISH_BODY as u64 {
+                    return validation_err("upload exceeds maximum size limit");
+                }
+                file_data.push((filename, bytes.to_vec()));
+            }
+            _ => {
+                // Ignore unknown fields
+            }
+        }
+    }
+
+    let metadata = match metadata {
+        Some(m) => m,
+        None => return validation_err("missing 'metadata' field in multipart upload"),
+    };
+
+    if file_data.is_empty() {
+        return validation_err("no files uploaded");
+    }
+
+    // Validate file limits
+    if file_data.len() > 100 {
+        return validation_err(format!("too many files: {} (max 100)", file_data.len()));
+    }
+
+    for (filename, data) in &file_data {
+        if data.len() as u64 > 10 * 1024 * 1024 {
+            return validation_err(format!("file '{filename}' exceeds 10 MB limit"));
+        }
+    }
+
+    if total_size > 50 * 1024 * 1024 {
+        return validation_err("total upload size exceeds 50 MB limit");
+    }
+
+    // Verify checksums match
+    for meta_file in &metadata.files {
+        let uploaded = file_data.iter().find(|(name, _)| *name == meta_file.path);
+        match uploaded {
+            Some((_, data)) => {
+                let computed = sha256_hex(data);
+                if computed != meta_file.sha256 {
+                    return validation_err(format!(
+                        "checksum mismatch for '{}': expected {}, got {}",
+                        meta_file.path, meta_file.sha256, computed
+                    ));
+                }
+            }
+            None => {
+                return validation_err(format!(
+                    "file '{}' declared in metadata but not uploaded",
+                    meta_file.path
+                ));
+            }
+        }
+    }
+
+    // Determine version: extract from frontmatter or auto-increment
+    let version_str = determine_version(rt, &name, &file_data, &state);
+    let version_str = match version_str {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    // Validate semver format
+    if let Err(resp) = parse_version(&version_str) {
+        return resp;
+    }
+
+    // Check version monotonicity
+    let store = match acquire_store(&state) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let existing_resource = store.get_resource(None, &name, rt);
+    if let Ok(ref resource) = existing_resource {
+        // Check that the new version is newer than the latest
+        if let Some(ref latest_str) = resource.latest_version {
+            let latest = match SemVer::parse(latest_str) {
+                Ok(v) => v,
+                Err(_) => {
+                    return validation_err(format!(
+                        "existing latest version '{latest_str}' is not valid semver"
+                    ));
+                }
+            };
+            let new_ver = match SemVer::parse(&version_str) {
+                Ok(v) => v,
+                Err(_) => return validation_err(format!("'{version_str}' is not valid semver")),
+            };
+            if new_ver <= latest {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ApiError::new(format!(
+                        "version {version_str} is not newer than latest {latest_str}"
+                    ))),
+                )
+                    .into_response();
+            }
+        }
+
+        // Check for duplicate version
+        if store.get_version(resource.id, &version_str).is_ok() {
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiError::new(format!(
+                    "version {version_str} already exists for {name}"
+                ))),
+            )
+                .into_response();
+        }
+    }
+
+    // Store files via BlobStore
+    let store_path = format!("{}/{name}/{version_str}", rt.store_dir_name());
+    let blob_store = match &state.blob_store {
+        Some(bs) => bs,
+        None => {
+            return validation_err("server not configured for file storage");
+        }
+    };
+
+    for (filename, data) in &file_data {
+        let blob_path = format!("{store_path}/{filename}");
+        if let Err(e) = blob_store.store(&blob_path, data) {
+            eprintln!("[relava-server] blob store error: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal server error")),
+            )
+                .into_response();
+        }
+    }
+
+    // Compute overall checksum (SHA-256 of all file checksums concatenated)
+    let overall_checksum = {
+        let mut combined = String::new();
+        for meta_file in &metadata.files {
+            combined.push_str(&meta_file.sha256);
+        }
+        sha256_hex(combined.as_bytes())
+    };
+
+    // Publish to store
+    let resource = Resource {
+        id: 0,
+        scope: None,
+        name: name.clone(),
+        resource_type: rt.to_string(),
+        description: None,
+        latest_version: None,
+        metadata_json: None,
+        updated_at: None,
+    };
+
+    let version = Version {
+        id: 0,
+        resource_id: 0,
+        version: version_str.clone(),
+        store_path: Some(store_path),
+        checksum: Some(overall_checksum),
+        manifest_json: None,
+        published_by: None,
+        published_at: None,
+    };
+
+    if let Err(e) = store.publish(&resource, &version) {
+        return store_err(e);
+    }
+
+    // Drop store lock before responding
+    drop(store);
+
+    (
+        StatusCode::CREATED,
+        Json(PublishResponseBody {
+            name,
+            resource_type: rt.to_string(),
+            version: version_str,
+        }),
+    )
+        .into_response()
+}
+
+/// Determine the version for a publish operation.
+///
+/// 1. Try to extract version from frontmatter of the primary markdown file.
+/// 2. If no version in frontmatter, auto-increment from the latest published version.
+/// 3. If no published versions exist, default to "0.1.0".
+#[allow(clippy::result_large_err)]
+fn determine_version(
+    rt: ResourceType,
+    name: &str,
+    file_data: &[(String, Vec<u8>)],
+    state: &AppState,
+) -> Result<String, Response> {
+    // Try to extract version from frontmatter
+    let primary_filename = match rt {
+        ResourceType::Skill => "SKILL.md".to_string(),
+        _ => format!("{name}.md"),
+    };
+
+    if let Some((_, data)) = file_data.iter().find(|(f, _)| *f == primary_filename)
+        && let Ok(content) = std::str::from_utf8(data)
+        && let Some(version) = extract_frontmatter_version(content)
+    {
+        return Ok(version);
+    }
+
+    // Auto-increment from latest
+    let store = acquire_store(state)?;
+    let latest = match store.get_resource(None, name, rt) {
+        Ok(resource) => resource.latest_version,
+        Err(StoreError::NotFound(_)) => None,
+        Err(e) => return Err(store_err(e)),
+    };
+
+    match latest {
+        Some(latest_str) => {
+            let latest_ver = SemVer::parse(&latest_str)
+                .map_err(|_| validation_err(format!("latest version '{latest_str}' is invalid")))?;
+            Ok(format!(
+                "{}.{}.{}",
+                latest_ver.major,
+                latest_ver.minor,
+                latest_ver.patch + 1
+            ))
+        }
+        None => Ok("0.1.0".to_string()),
+    }
+}
+
+/// Extract version from YAML frontmatter.
+fn extract_frontmatter_version(content: &str) -> Option<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let after_open = &trimmed[3..];
+    let end = after_open.find("\n---")?;
+    let yaml_str = &after_open[..end];
+
+    let yaml_value: serde_json::Value = serde_yaml::from_str(yaml_str).ok()?;
+    yaml_value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Compute SHA-256 hex digest of data.
+fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write;
+    // Simple SHA-256: use ring or just recompute manually
+    // Actually, we need a SHA-256 crate. Let's use the sha2 crate.
+    // But the server doesn't have sha2 as a dep yet. Let me use a simple approach.
+    // Actually, we can compute it inline using rusqlite's built-in or just store
+    // the client-provided checksums after verification. But for verification,
+    // we need to compute sha256 ourselves.
+
+    // For now, use a basic approach: since we can't add sha2 easily to the server,
+    // let's compute using the ring crate or just trust the client checksums.
+    // Actually, let me just add sha2 to the server dependencies.
+
+    // Placeholder that will be replaced with actual sha256 computation
+    use sha2::{Digest, Sha256};
+    let result = Sha256::digest(data);
+    let mut hex = String::with_capacity(64);
+    for byte in result {
+        write!(hex, "{byte:02x}").unwrap();
+    }
+    hex
+}
+
+// ---------------------------------------------------------------------------
+// Download handler
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/resources/:type/:name/versions/:version/download
+///
+/// Serves resource files as a tar archive for the specified version.
+async fn download_version(
+    State(state): State<Arc<AppState>>,
+    Path((rtype, name, version)): Path<(String, String, String)>,
+) -> Response {
+    let rt = match validate_resource_path(&rtype, &name) {
+        Ok(rt) => rt,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = parse_version(&version) {
+        return resp;
+    }
+
+    // Verify resource and version exist
+    let store = match acquire_store(&state) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let resource = match store.get_resource(None, &name, rt) {
+        Ok(r) => r,
+        Err(e) => return store_err(e),
+    };
+
+    let ver = match store.get_version(resource.id, &version) {
+        Ok(v) => v,
+        Err(e) => return store_err(e),
+    };
+    drop(store);
+
+    let store_path = match ver.store_path {
+        Some(ref p) => p.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new("no files stored for this version")),
+            )
+                .into_response();
+        }
+    };
+
+    let blob_store = match &state.blob_store {
+        Some(bs) => bs,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("server not configured for file storage")),
+            )
+                .into_response();
+        }
+    };
+
+    // Collect all files under the version store path
+    let files = match collect_blob_files(blob_store, &store_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[relava-server] download error: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal server error")),
+            )
+                .into_response();
+        }
+    };
+
+    if files.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("no files found for this version")),
+        )
+            .into_response();
+    }
+
+    // Build a tar archive
+    let mut tar_data = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_data);
+        for (path, data) in &files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, data.as_slice())
+                .unwrap();
+        }
+        builder.finish().unwrap();
+    }
+
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/x-tar".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}-{version}.tar\""),
+            ),
+        ],
+        tar_data,
+    )
+        .into_response()
+}
+
+/// Collect all files under a blob store path.
+///
+/// For the LocalBlobStore, this walks the filesystem directory.
+/// Returns `(relative_path, data)` pairs.
+fn collect_blob_files(
+    blob_store: &crate::store::LocalBlobStore,
+    store_path: &str,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let root = blob_store.resolve_path(store_path);
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    collect_blob_recursive(&root, &root, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+fn collect_blob_recursive(
+    base: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<(String, Vec<u8>)>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read directory '{}': {e}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("directory read error: {e}"))?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_blob_recursive(base, &path, files)?;
+        } else {
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let data = std::fs::read(&path)
+                .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+            files.push((relative, data));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -399,10 +912,18 @@ pub fn resource_routes() -> Router<Arc<AppState>> {
                 .post(create_resource)
                 .delete(delete_resource),
         )
+        .route(
+            "/resources/{type}/{name}/publish",
+            axum::routing::post(publish_resource),
+        )
         .route("/resources/{type}/{name}/versions", get(list_versions))
         .route(
             "/resources/{type}/{name}/versions/{version}",
             get(get_version),
+        )
+        .route(
+            "/resources/{type}/{name}/versions/{version}/download",
+            get(download_version),
         )
         .route("/resolve/{type}/{name}", get(resolve_deps))
 }
@@ -717,6 +1238,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
         let app = Router::new()
             .nest("/api/v1", resource_routes())
@@ -792,6 +1314,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
         Router::new()
             .nest("/api/v1", resource_routes())
@@ -1027,6 +1550,7 @@ mod tests {
         let state = Arc::new(AppState {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
+            blob_store: None,
         });
         let app = Router::new()
             .nest("/api/v1", resource_routes())
@@ -1198,5 +1722,457 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
         assert_eq!(body.as_array().unwrap().len(), 1);
+    }
+
+    // -- Publish endpoint tests --
+
+    /// Helper to create a temp directory for blob storage in tests.
+    fn blob_test_dir() -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("relava-route-test-{}-{}", std::process::id(), id));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Build a multipart body manually for testing.
+    fn build_multipart_body(
+        metadata: &serde_json::Value,
+        files: &[(&str, &[u8])],
+    ) -> (String, Vec<u8>) {
+        let boundary = "----RelavaTestBoundary";
+        let mut body = Vec::new();
+
+        // Metadata part
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"metadata\"\r\n\r\n");
+        body.extend_from_slice(serde_json::to_string(metadata).unwrap().as_bytes());
+        body.extend_from_slice(b"\r\n");
+
+        // File parts
+        for (filename, data) in files {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
+                     Content-Type: application/octet-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\r\n");
+        }
+
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    /// Compute SHA-256 hex of data for test assertions.
+    fn test_sha256(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write;
+        let result = Sha256::digest(data);
+        let mut hex = String::with_capacity(64);
+        for byte in result {
+            write!(hex, "{byte:02x}").unwrap();
+        }
+        hex
+    }
+
+    /// Send a multipart publish request.
+    async fn send_publish(
+        app: Router,
+        rtype: &str,
+        name: &str,
+        metadata: &serde_json::Value,
+        files: &[(&str, &[u8])],
+    ) -> axum::response::Response {
+        let (content_type, body_bytes) = build_multipart_body(metadata, files);
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/resources/{rtype}/{name}/publish"))
+                .header("content-type", content_type)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn publish_auto_increments_version() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\n---\n# My Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        // First publish — should get 0.1.0
+        let resp = send_publish(
+            app.clone(),
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], "0.1.0");
+        assert_eq!(body["name"], "denden");
+        assert_eq!(body["type"], "skill");
+
+        // Second publish — should get 0.1.1
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], "0.1.1");
+    }
+
+    #[tokio::test]
+    async fn publish_uses_frontmatter_version() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 2.0.0\n---\n# My Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], "2.0.0");
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_duplicate_version() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        // First publish
+        let resp = send_publish(
+            app.clone(),
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Second publish with same version — should 409
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_older_version() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let v2_content = b"---\nversion: 2.0.0\n---\n# Skill";
+        let v2_sha = test_sha256(v2_content);
+
+        let v1_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let v1_sha = test_sha256(v1_content);
+
+        // Publish 2.0.0 first
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": v2_sha, "size": v2_content.len()}]
+        });
+        let resp = send_publish(
+            app.clone(),
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", v2_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Try to publish 1.0.0 — should 409 (not newer)
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": v1_sha, "size": v1_content.len()}]
+        });
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", v1_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_checksum_mismatch() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# Skill";
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": "badhash", "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("checksum mismatch")
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_missing_metadata() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        // Send a publish request with no metadata field — just files
+        let boundary = "----TestBoundary";
+        let mut body_bytes = Vec::new();
+        body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body_bytes.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"SKILL.md\"\r\n\
+              Content-Type: application/octet-stream\r\n\r\nhello\r\n",
+        );
+        body_bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/resources/skill/denden/publish")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body_bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_invalid_slug() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"hello";
+        let sha = test_sha256(file_content);
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": 5}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "INVALID",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // -- Download endpoint tests --
+
+    #[tokio::test]
+    async fn download_published_version() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"---\nversion: 1.0.0\n---\n# My Skill";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        // Publish first
+        let resp = send_publish(
+            app.clone(),
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Download
+        let resp = send(
+            app,
+            "GET",
+            "/api/v1/resources/skill/denden/versions/1.0.0/download",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("application/x-tar"));
+
+        // Verify tar contains the file
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_nonexistent_version_returns_404() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        // Create resource first
+        send(
+            app.clone(),
+            "POST",
+            "/api/v1/resources/skill/denden",
+            Some(r#"{"description":"test"}"#),
+        )
+        .await;
+
+        let resp = send(
+            app,
+            "GET",
+            "/api/v1/resources/skill/denden/versions/9.9.9/download",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publish_multiple_files() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let skill_md = b"---\nversion: 1.0.0\n---\n# Skill";
+        let util_md = b"# Utils";
+        let skill_sha = test_sha256(skill_md);
+        let util_sha = test_sha256(util_md);
+
+        let metadata = serde_json::json!({
+            "files": [
+                {"path": "SKILL.md", "sha256": skill_sha, "size": skill_md.len()},
+                {"path": "lib/utils.md", "sha256": util_sha, "size": util_md.len()},
+            ]
+        });
+
+        let resp = send_publish(
+            app.clone(),
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", skill_md), ("lib/utils.md", util_md)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Download and verify both files are in the tar
+        let resp = send(
+            app,
+            "GET",
+            "/api/v1/resources/skill/denden/versions/1.0.0/download",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let mut archive = tar::Archive::new(&body[..]);
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(entries.contains(&"SKILL.md".to_string()));
+        assert!(entries.contains(&"lib/utils.md".to_string()));
+    }
+
+    // -- Version auto-increment tests --
+
+    #[tokio::test]
+    async fn publish_first_without_version_defaults_to_0_1_0() {
+        let blob_dir = blob_test_dir();
+        let app = crate::app_with_blob_store(blob_dir);
+
+        let file_content = b"# Simple skill with no frontmatter";
+        let sha = test_sha256(file_content);
+
+        let metadata = serde_json::json!({
+            "files": [{"path": "SKILL.md", "sha256": sha, "size": file_content.len()}]
+        });
+
+        let resp = send_publish(
+            app,
+            "skill",
+            "denden",
+            &metadata,
+            &[("SKILL.md", file_content)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], "0.1.0");
     }
 }

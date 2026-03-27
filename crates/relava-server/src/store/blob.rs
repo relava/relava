@@ -19,6 +19,11 @@ impl LocalBlobStore {
     fn resolve(&self, path: &str) -> PathBuf {
         self.root.join(path)
     }
+
+    /// Resolve a relative path against the store root (public for download handler).
+    pub fn resolve_path(&self, path: &str) -> PathBuf {
+        self.root.join(path)
+    }
 }
 
 impl BlobStore for LocalBlobStore {

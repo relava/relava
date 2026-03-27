@@ -13,6 +13,7 @@ mod install;
 mod list;
 mod lockfile;
 mod output;
+mod publish;
 mod registry;
 mod remove;
 mod resolver;
@@ -336,9 +337,28 @@ fn main() {
         Command::Publish {
             resource_type,
             name,
-            ..
+            path,
         } => {
-            println!("relava publish {resource_type} {name}");
+            let rt = install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
+
+            let opts = publish::PublishOpts {
+                server_url: &cli.server,
+                resource_type: rt,
+                name: &name,
+                path: path.as_ref().map(|p| std::path::Path::new(p.as_str())),
+                json: cli.json,
+                verbose: cli.verbose,
+            };
+
+            match publish::run(&opts) {
+                Ok(result) => {
+                    if cli.json {
+                        print_json(&result);
+                    }
+                }
+                Err(e) => exit_with_error(&e, cli.json),
+            }
         }
         Command::Resolve {
             resource_type,
