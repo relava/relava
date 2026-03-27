@@ -15,8 +15,10 @@ clap.workspace = true
 colored.workspace = true
 comfy-table.workspace = true
 dirs.workspace = true
+flate2 = "1"
 relava-types = { path = "../relava-types" }
 reqwest.workspace = true
+tar = "0.4"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -26,6 +28,8 @@ urlencoding = "2"
 [dev-dependencies]
 base64.workspace = true
 filetime = "0.2"
+flate2 = "1"
 mockito = "1"
 sha2.workspace = true
+tar = "0.4"
 tempfile = "3"
