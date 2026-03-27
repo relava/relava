@@ -1,12 +1,12 @@
 ---
 name: relava
-description: CLI reference for the relava local package manager for Claude Code resources (skills, agents, commands, rules). Use when installing, removing, publishing, updating, searching, or managing resources. Also use when setting up a new project (relava init), troubleshooting resource issues (relava doctor), managing the local registry server, or when a relava.toml exists and resources need syncing. Trigger whenever the user mentions relava, package management for Claude Code, or needs to find/share prompt-layer resources.
+description: CLI reference for the relava local package manager for prompt-layer resources (skills, agents, commands, rules). Use when installing, removing, publishing, updating, searching, or managing resources. Also use when setting up a new project (relava init), troubleshooting resource issues (relava doctor), managing the local registry server, or when a relava.toml exists and resources need syncing. Trigger whenever the user mentions relava, package management for AI resources, or needs to find/share prompt-layer resources.
 version: 0.1.0
 ---
 
 # Relava
 
-Relava is a local package manager for Claude Code prompt-layer resources — skills, agents, commands, and rules. It runs a local registry server and provides a CLI to install, publish, update, and manage resources across projects. Use relava commands whenever the user needs to install, discover, publish, or troubleshoot Claude Code resources.
+Relava is a local package manager for prompt-layer resources — skills, agents, commands, and rules. It runs a local registry server and provides a CLI to install, publish, update, and manage resources across projects. Use relava commands whenever the user needs to install, discover, publish, or troubleshoot prompt-layer resources.
 
 ## Commands Reference
 
@@ -85,10 +85,10 @@ Relava is a local package manager for Claude Code prompt-layer resources — ski
 
 | Type | File | Install Location (project) | Purpose |
 |------|------|---------------------------|---------|
-| **skill** | `SKILL.md` | `.claude/skills/<name>/` | Teaches Claude domain knowledge, workflows, or tool usage |
+| **skill** | `SKILL.md` | `.claude/skills/<name>/` | Teaches domain knowledge, workflows, or tool usage |
 | **agent** | `AGENT.md` + optional files | `.claude/agents/<name>/` | Defines autonomous agent behaviors and capabilities |
 | **command** | `COMMAND.md` | `.claude/commands/<name>/` | Adds slash commands (e.g. `/review`, `/deploy`) |
-| **rule** | `RULE.md` | `.claude/rules/<name>/` | Sets project-wide rules and constraints for Claude |
+| **rule** | `RULE.md` | `.claude/rules/<name>/` | Sets project-wide rules and constraints for the agent |
 
 All resource types use YAML frontmatter with at least `name`, `description`, and `version` fields. Skills, commands, and rules must be text-only (no binary files).
 
