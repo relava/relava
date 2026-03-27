@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use relava_types::file_filter;
+use relava_types::file_filter::{self, IgnorePatterns, RELAVAIGNORE_FILE};
 use relava_types::validate::{self, ResourceType};
 
 // ---------------------------------------------------------------------------
@@ -285,9 +285,18 @@ fn check_frontmatter(
 
 /// Check 4 & 5: File limits and file type filtering.
 fn check_files(checks: &mut Checks, path: &Path, resource_type: ResourceType) {
-    // Collect all files (skip hidden)
+    // Load .relavaignore patterns (continue with empty patterns on error)
+    let ignore = match IgnorePatterns::load(path) {
+        Ok(p) => p,
+        Err(e) => {
+            checks.fail("relavaignore", format!("Cannot load .relavaignore: {e}"));
+            IgnorePatterns::default()
+        }
+    };
+
+    // Collect all files (skip hidden, apply .relavaignore)
     let files = match collect_file_paths(path) {
-        Ok(f) => f,
+        Ok(f) => file_filter::filter_ignored(path, f, &ignore),
         Err(e) => {
             checks.fail("file_count", format!("Cannot scan files: {e}"));
             return;
@@ -514,11 +523,11 @@ fn collect_dir_paths(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String>
         let entry = entry.map_err(|e| format!("directory entry error: {e}"))?;
         let entry_path = entry.path();
 
-        // Skip hidden files/directories
+        // Skip hidden files/directories, but allow .relavaignore through
         if entry_path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with('.'))
+            .is_some_and(|n| n.starts_with('.') && n != RELAVAIGNORE_FILE)
         {
             continue;
         }

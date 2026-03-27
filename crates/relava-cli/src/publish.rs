@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::api_client::ApiClient;
 use crate::output::Tag;
 use crate::validate;
+use relava_types::file_filter::{self, IgnorePatterns, RELAVAIGNORE_FILE};
 use relava_types::validate::ResourceType;
 
 // ---------------------------------------------------------------------------
@@ -206,8 +207,13 @@ fn resolve_resource_dir(opts: &PublishOpts) -> Result<PathBuf, String> {
 }
 
 /// Collect all files under the resource directory, computing SHA-256 hashes.
+///
+/// Loads `.relavaignore` from the resource root (if present) and excludes
+/// matching files. The `.relavaignore` file itself is always included.
 fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
+    let ignore = IgnorePatterns::load(root)?;
     let paths = collect_file_paths(root)?;
+    let paths = file_filter::filter_ignored(root, paths, &ignore);
     let mut entries = Vec::new();
 
     for path in paths {
@@ -254,8 +260,8 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String>
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // Skip hidden files/dirs
-        if name_str.starts_with('.') {
+        // Skip hidden files/dirs, but allow .relavaignore through
+        if name_str.starts_with('.') && name_str != RELAVAIGNORE_FILE {
             continue;
         }
 
@@ -445,5 +451,56 @@ mod tests {
     #[test]
     fn format_size_mb() {
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    // -- .relavaignore tests --
+
+    #[test]
+    fn collect_files_applies_relavaignore() {
+        let dir = temp_dir();
+        fs::write(dir.join("SKILL.md"), "skill content").unwrap();
+        fs::write(dir.join("notes.tmp"), "temp file").unwrap();
+        fs::write(dir.join(".relavaignore"), "*.tmp\n").unwrap();
+
+        let files = collect_files(&dir).unwrap();
+        let names: Vec<_> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert!(names.contains(&"SKILL.md"));
+        assert!(!names.contains(&"notes.tmp"));
+    }
+
+    #[test]
+    fn collect_files_includes_relavaignore_itself() {
+        let dir = temp_dir();
+        fs::write(dir.join("SKILL.md"), "content").unwrap();
+        fs::write(dir.join(".relavaignore"), "*.tmp\n").unwrap();
+
+        let files = collect_files(&dir).unwrap();
+        let names: Vec<_> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert!(names.contains(&".relavaignore"));
+    }
+
+    #[test]
+    fn collect_files_no_relavaignore_includes_all() {
+        let dir = temp_dir();
+        fs::write(dir.join("SKILL.md"), "content").unwrap();
+        fs::write(dir.join("extra.txt"), "extra").unwrap();
+
+        let files = collect_files(&dir).unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn collect_files_relavaignore_excludes_directory() {
+        let dir = temp_dir();
+        fs::write(dir.join("SKILL.md"), "content").unwrap();
+        fs::create_dir_all(dir.join("build")).unwrap();
+        fs::write(dir.join("build/output.bin"), "binary").unwrap();
+        fs::write(dir.join(".relavaignore"), "build/\n").unwrap();
+
+        let files = collect_files(&dir).unwrap();
+        let names: Vec<_> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert!(names.contains(&"SKILL.md"));
+        assert!(names.contains(&".relavaignore"));
+        assert!(!names.contains(&"build/output.bin"));
     }
 }
