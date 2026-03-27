@@ -174,6 +174,121 @@ impl ResourceStore for SqliteResourceStore {
             })
     }
 
+    fn list_resources(
+        &self,
+        resource_type: Option<ResourceType>,
+    ) -> Result<Vec<Resource>, StoreError> {
+        if let Some(rt) = resource_type {
+            let rt_str = rt.to_string();
+            self.query_resources(
+                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
+                 FROM resources
+                 WHERE type = ?1
+                 ORDER BY name",
+                &[&rt_str as &dyn ToSql],
+            )
+        } else {
+            self.query_resources(
+                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
+                 FROM resources
+                 ORDER BY name",
+                &[],
+            )
+        }
+    }
+
+    fn create_resource(&self, resource: &Resource) -> Result<Resource, StoreError> {
+        // Explicit duplicate check: SQLite UNIQUE treats NULL != NULL, so the
+        // constraint alone won't catch duplicates when scope is NULL.
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM resources WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
+                (&resource.scope, &resource.name, &resource.resource_type),
+                |row| row.get(0),
+            )
+            .map_err(db_err)?;
+
+        if exists {
+            return Err(StoreError::AlreadyExists(format!(
+                "{} '{}' already exists",
+                resource.resource_type, resource.name
+            )));
+        }
+
+        self.conn
+            .execute(
+                "INSERT INTO resources (scope, name, type, description, latest_version, metadata_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                (
+                    &resource.scope,
+                    &resource.name,
+                    &resource.resource_type,
+                    &resource.description,
+                    &resource.latest_version,
+                    &resource.metadata_json,
+                ),
+            )
+            .map_err(db_err)?;
+
+        let id = self.conn.last_insert_rowid();
+        self.conn
+            .query_row(
+                "SELECT id, scope, name, type, description, latest_version, metadata_json, updated_at
+                 FROM resources WHERE id = ?1",
+                [id],
+                resource_from_row,
+            )
+            .map_err(db_err)
+    }
+
+    fn delete_resource(
+        &self,
+        scope: Option<&str>,
+        name: &str,
+        resource_type: ResourceType,
+    ) -> Result<(), StoreError> {
+        let rt = resource_type.to_string();
+
+        // Use a transaction so versions and resource are deleted atomically.
+        self.conn.execute("BEGIN IMMEDIATE", []).map_err(db_err)?;
+
+        let result = (|| {
+            // Find the resource id (also validates existence).
+            let resource_id: i64 = self
+                .conn
+                .query_row(
+                    "SELECT id FROM resources WHERE (scope IS ?1) AND name = ?2 AND type = ?3",
+                    (scope, name, &rt),
+                    |row| row.get(0),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        StoreError::NotFound(format!("{resource_type} '{name}' not found"))
+                    }
+                    other => db_err(other),
+                })?;
+
+            // Delete all versions first, then the resource.
+            self.conn
+                .execute("DELETE FROM versions WHERE resource_id = ?1", [resource_id])
+                .map_err(db_err)?;
+            self.conn
+                .execute("DELETE FROM resources WHERE id = ?1", [resource_id])
+                .map_err(db_err)?;
+
+            Ok(())
+        })();
+
+        if result.is_ok() {
+            self.conn.execute("COMMIT", []).map_err(db_err)?;
+        } else {
+            let _ = self.conn.execute("ROLLBACK", []);
+        }
+
+        result
+    }
+
     fn list_versions(&self, resource_id: i64) -> Result<Vec<Version>, StoreError> {
         let mut stmt = self
             .conn
@@ -190,6 +305,23 @@ impl ResourceStore for SqliteResourceStore {
             .map_err(db_err)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    fn get_version(&self, resource_id: i64, version: &str) -> Result<Version, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT id, resource_id, version, store_path, checksum, manifest_json, published_by, published_at
+                 FROM versions
+                 WHERE resource_id = ?1 AND version = ?2",
+                (resource_id, version),
+                version_from_row,
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::NotFound(format!("version '{version}' not found"))
+                }
+                other => db_err(other),
+            })
     }
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError> {
@@ -476,5 +608,145 @@ mod tests {
             .get_resource(Some("myteam"), "denden", ResourceType::Skill)
             .unwrap();
         assert_eq!(s.latest_version.as_deref(), Some("2.0.0"));
+    }
+
+    // -- create_resource tests --
+
+    #[test]
+    fn create_resource_returns_created() {
+        let store = test_store();
+        let resource = sample_resource();
+        let created = store.create_resource(&resource).unwrap();
+        assert_eq!(created.name, "denden");
+        assert_eq!(created.resource_type, "skill");
+        assert!(created.id > 0);
+        assert!(created.updated_at.is_some());
+    }
+
+    #[test]
+    fn create_resource_duplicate_errors() {
+        let store = test_store();
+        let resource = sample_resource();
+        store.create_resource(&resource).unwrap();
+        let result = store.create_resource(&resource);
+        assert!(matches!(result, Err(StoreError::AlreadyExists(_))));
+    }
+
+    // -- delete_resource tests --
+
+    #[test]
+    fn delete_resource_removes_resource() {
+        let store = test_store();
+        store.create_resource(&sample_resource()).unwrap();
+
+        store
+            .delete_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
+
+        let result = store.get_resource(None, "denden", ResourceType::Skill);
+        assert!(matches!(result, Err(StoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn delete_resource_cascades_versions() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+        store
+            .publish(&sample_resource(), &sample_version("2.0.0"))
+            .unwrap();
+
+        let resource = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
+        assert_eq!(store.list_versions(resource.id).unwrap().len(), 2);
+
+        store
+            .delete_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
+
+        // Verify versions are also gone (use raw query since resource is deleted).
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM versions WHERE resource_id = ?1",
+                [resource.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_resource_not_found_errors() {
+        let store = test_store();
+        let result = store.delete_resource(None, "nonexistent", ResourceType::Skill);
+        assert!(matches!(result, Err(StoreError::NotFound(_))));
+    }
+
+    // -- list_resources tests --
+
+    #[test]
+    fn list_resources_all() {
+        let store = test_store();
+        store.create_resource(&sample_resource()).unwrap();
+
+        let mut agent = sample_resource();
+        agent.name = "debugger".to_string();
+        agent.resource_type = "agent".to_string();
+        store.create_resource(&agent).unwrap();
+
+        let all = store.list_resources(None).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_resources_with_type_filter() {
+        let store = test_store();
+        store.create_resource(&sample_resource()).unwrap();
+
+        let mut agent = sample_resource();
+        agent.name = "debugger".to_string();
+        agent.resource_type = "agent".to_string();
+        store.create_resource(&agent).unwrap();
+
+        let skills = store.list_resources(Some(ResourceType::Skill)).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "denden");
+
+        let agents = store.list_resources(Some(ResourceType::Agent)).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "debugger");
+    }
+
+    // -- get_version tests --
+
+    #[test]
+    fn get_version_found() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+
+        let resource = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
+        let version = store.get_version(resource.id, "1.0.0").unwrap();
+        assert_eq!(version.version, "1.0.0");
+    }
+
+    #[test]
+    fn get_version_not_found_errors() {
+        let store = test_store();
+        store
+            .publish(&sample_resource(), &sample_version("1.0.0"))
+            .unwrap();
+
+        let resource = store
+            .get_resource(None, "denden", ResourceType::Skill)
+            .unwrap();
+        let result = store.get_version(resource.id, "9.9.9");
+        assert!(matches!(result, Err(StoreError::NotFound(_))));
     }
 }
