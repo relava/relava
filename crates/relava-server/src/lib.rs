@@ -1,5 +1,6 @@
 pub mod resolve;
 pub mod routes;
+pub mod seed;
 pub mod store;
 
 use std::collections::HashMap;
