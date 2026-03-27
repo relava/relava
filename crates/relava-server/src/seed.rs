@@ -110,14 +110,12 @@ fn seed_one(
     let is_reseed = match store.get_resource(None, bundled.name, bundled.resource_type) {
         Ok(existing) => {
             // Resource exists — compare versions
-            if let Some(ref latest) = existing.latest_version {
-                if let Ok(registry_version) = Version::parse(latest) {
-                    if registry_version >= embedded_version {
-                        // Registry has same or newer version — skip
-                        return Ok(());
-                    }
-                }
-                // Registry version is older or unparseable — update
+            if let Some(ref latest) = existing.latest_version
+                && let Ok(registry_version) = Version::parse(latest)
+                && registry_version >= embedded_version
+            {
+                // Registry has same or newer version — skip
+                return Ok(());
             }
             false
         }
@@ -151,7 +149,11 @@ fn seed_one(
         id: 0,
         scope: None,
         name: bundled.name.to_string(),
-        resource_type: bundled.resource_type.store_dir_name().trim_end_matches('s').to_string(),
+        resource_type: bundled
+            .resource_type
+            .store_dir_name()
+            .trim_end_matches('s')
+            .to_string(),
         description: Some(description),
         latest_version: None,
         metadata_json: None,
@@ -369,10 +371,7 @@ mod tests {
         assert_eq!(versions.len(), 1);
 
         let ver = &versions[0];
-        assert_eq!(
-            ver.store_path.as_deref(),
-            Some("skills/relava/0.1.0")
-        );
+        assert_eq!(ver.store_path.as_deref(), Some("skills/relava/0.1.0"));
         assert!(ver.checksum.is_some());
         assert_eq!(ver.published_by.as_deref(), Some("relava-server"));
 

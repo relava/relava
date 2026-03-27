@@ -80,6 +80,11 @@ pub fn app_with_config(
         .unwrap_or_else(|| PathBuf::from("store"));
     let blob_store = store::LocalBlobStore::new(blob_root);
 
+    // Seed default resources (non-fatal on failure)
+    if let Err(e) = seed::seed(&store, &blob_store) {
+        eprintln!("[relava-server] failed to seed defaults: {e}");
+    }
+
     let state = Arc::new(AppState {
         started_at: Instant::now(),
         store: Mutex::new(store),
@@ -980,5 +985,31 @@ mod tests {
         std::fs::write(tmp.path().join("f1"), &[1u8; 40]).unwrap();
         std::fs::write(sub.join("f2"), &[2u8; 60]).unwrap();
         assert_eq!(dir_size_bytes(tmp.path()), 100);
+    }
+
+    // -- Seed integration test --
+
+    #[tokio::test]
+    async fn app_with_config_seeds_default_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("relava.db");
+
+        let app = app_with_config(&db_path, None, None).unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/resources/skill/relava")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert_eq!(json["name"], "relava");
+        assert_eq!(json["type"], "skill");
+        assert_eq!(json["latest_version"], "0.1.0");
     }
 }
