@@ -387,8 +387,14 @@ fn main() {
             }
         }
         Command::Server { action } => match action {
-            ServerAction::Start { port, daemon } => {
-                if let Err(e) = server::start(port, daemon, cli.json, cli.verbose) {
+            ServerAction::Start {
+                port,
+                daemon,
+                gui_dir,
+            } => {
+                if let Err(e) =
+                    server::start(port, daemon, gui_dir.as_deref(), cli.json, cli.verbose)
+                {
                     exit_with_error(&e, cli.json);
                 }
             }

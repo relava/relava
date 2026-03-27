@@ -62,6 +62,11 @@ impl RelavaDir {
         self.root.join("logs")
     }
 
+    /// Path to the `gui/` directory (static web assets for the GUI).
+    pub fn gui_dir(&self) -> PathBuf {
+        self.root.join("gui")
+    }
+
     /// Path to a resource type directory, e.g. `store/skills/`.
     pub fn type_dir(&self, resource_type: ResourceType) -> PathBuf {
         self.store_dir().join(resource_type.store_dir_name())

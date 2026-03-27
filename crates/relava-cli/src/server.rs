@@ -223,7 +223,16 @@ struct StatusResult {
 // ---------------------------------------------------------------------------
 
 /// Start the registry server.
-pub fn start(port: u16, daemon: bool, json: bool, verbose: bool) -> Result<(), String> {
+///
+/// If `gui_dir` is provided, it is forwarded to the server binary via the
+/// `RELAVA_GUI_DIR` environment variable to serve static GUI files.
+pub fn start(
+    port: u16,
+    daemon: bool,
+    gui_dir: Option<&str>,
+    json: bool,
+    verbose: bool,
+) -> Result<(), String> {
     // Check for an already-running server.
     if let Some(state) = check_existing_server()? {
         let msg = format!(
@@ -240,14 +249,20 @@ pub fn start(port: u16, daemon: bool, json: bool, verbose: bool) -> Result<(), S
     }
 
     if daemon {
-        start_daemon(&binary, port, json, verbose)
+        start_daemon(&binary, port, gui_dir, json, verbose)
     } else {
-        start_foreground(&binary, port, json, verbose)
+        start_foreground(&binary, port, gui_dir, json, verbose)
     }
 }
 
 /// Start the server in daemon (background) mode.
-fn start_daemon(binary: &Path, port: u16, json: bool, verbose: bool) -> Result<(), String> {
+fn start_daemon(
+    binary: &Path,
+    port: u16,
+    gui_dir: Option<&str>,
+    json: bool,
+    verbose: bool,
+) -> Result<(), String> {
     let log_path = log_file_path()?;
 
     // Open log file for daemon output.
@@ -260,9 +275,14 @@ fn start_daemon(binary: &Path, port: u16, json: bool, verbose: bool) -> Result<(
         .try_clone()
         .map_err(|e| format!("failed to clone log file handle: {e}"))?;
 
-    let child = Command::new(binary)
-        .env("RELAVA_PORT", port.to_string())
-        .env("RELAVA_HOST", "127.0.0.1")
+    let mut cmd = Command::new(binary);
+    cmd.env("RELAVA_PORT", port.to_string())
+        .env("RELAVA_HOST", "127.0.0.1");
+    if let Some(dir) = gui_dir {
+        cmd.env("RELAVA_GUI_DIR", dir);
+    }
+
+    let child = cmd
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_log))
         .spawn()
@@ -317,10 +337,21 @@ fn start_daemon(binary: &Path, port: u16, json: bool, verbose: bool) -> Result<(
 }
 
 /// Start the server in foreground mode (blocking).
-fn start_foreground(binary: &Path, port: u16, json: bool, _verbose: bool) -> Result<(), String> {
-    let mut child = Command::new(binary)
-        .env("RELAVA_PORT", port.to_string())
-        .env("RELAVA_HOST", "127.0.0.1")
+fn start_foreground(
+    binary: &Path,
+    port: u16,
+    gui_dir: Option<&str>,
+    json: bool,
+    _verbose: bool,
+) -> Result<(), String> {
+    let mut cmd = Command::new(binary);
+    cmd.env("RELAVA_PORT", port.to_string())
+        .env("RELAVA_HOST", "127.0.0.1");
+    if let Some(dir) = gui_dir {
+        cmd.env("RELAVA_GUI_DIR", dir);
+    }
+
+    let mut child = cmd
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()

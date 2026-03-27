@@ -3,6 +3,7 @@ pub mod routes;
 pub mod store;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -11,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
+use tower_http::services::{ServeDir, ServeFile};
 
 use store::db::SqliteResourceStore;
 
@@ -25,7 +27,11 @@ pub struct AppState {
 ///
 /// Opens (or creates) the SQLite database at `db_path` and wires all routes.
 /// The blob store root defaults to `~/.relava/store/`.
-pub fn app(db_path: &std::path::Path) -> Result<Router, store::StoreError> {
+///
+/// If `gui_dir` is provided and the directory exists, static files are served
+/// from it at `/` with SPA fallback (index.html for unmatched non-API routes).
+/// API routes always take priority over static file serving.
+pub fn app(db_path: &Path, gui_dir: Option<&Path>) -> Result<Router, store::StoreError> {
     let store = SqliteResourceStore::open(db_path)?;
 
     // Derive blob store root from db_path's parent (e.g., ~/.relava/store/)
@@ -41,16 +47,49 @@ pub fn app(db_path: &std::path::Path) -> Result<Router, store::StoreError> {
         blob_store: Some(blob_store),
     });
 
-    Ok(Router::new()
+    let api_router = Router::new()
         .route("/health", get(health))
         .route("/stats", get(stats))
         .nest("/api/v1", routes::resource_routes())
-        .with_state(state))
+        .with_state(state);
+
+    Ok(with_static_files(api_router, gui_dir))
+}
+
+/// Wrap an API router with static file serving if the GUI directory exists.
+///
+/// Uses `tower_http::services::ServeDir` with an `index.html` fallback for
+/// SPA routing. API routes are registered first so they always take priority.
+fn with_static_files(api_router: Router, gui_dir: Option<&Path>) -> Router {
+    let Some(dir) = gui_dir else {
+        return api_router;
+    };
+
+    if !dir.is_dir() {
+        eprintln!(
+            "[relava-server] GUI directory {} does not exist, skipping static file serving",
+            dir.display()
+        );
+        return api_router;
+    }
+
+    let index_path = dir.join("index.html");
+    let serve_dir = ServeDir::new(dir).fallback(ServeFile::new(index_path));
+
+    // API routes are defined first so they take priority; the fallback
+    // service handles everything else (static files + SPA fallback).
+    api_router.fallback_service(serve_dir)
 }
 
 /// Build a test router with an in-memory SQLite store (for testing only).
 #[cfg(test)]
 pub fn app_in_memory() -> Router {
+    app_in_memory_with_gui(None)
+}
+
+/// Build a test router with an in-memory SQLite store and optional GUI dir.
+#[cfg(test)]
+pub fn app_in_memory_with_gui(gui_dir: Option<&Path>) -> Router {
     let store = SqliteResourceStore::open_in_memory().unwrap();
     let state = Arc::new(AppState {
         started_at: Instant::now(),
@@ -58,11 +97,13 @@ pub fn app_in_memory() -> Router {
         blob_store: None,
     });
 
-    Router::new()
+    let api_router = Router::new()
         .route("/health", get(health))
         .route("/stats", get(stats))
         .nest("/api/v1", routes::resource_routes())
-        .with_state(state)
+        .with_state(state);
+
+    with_static_files(api_router, gui_dir)
 }
 
 /// Build a test router with an in-memory SQLite store and a temporary blob store.
@@ -435,5 +476,136 @@ mod tests {
     #[tokio::test]
     async fn unknown_route_returns_404() {
         assert_eq!(get("/nonexistent").await.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- Static file serving tests --
+
+    /// Create a temporary GUI directory with test files.
+    fn create_gui_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>SPA</body></html>",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("style.css"), "body { color: red; }").unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/app.js"), "console.log('hello');").unwrap();
+        dir
+    }
+
+    /// Helper to build a test app with a GUI directory.
+    fn app_with_gui(gui_dir: &std::path::Path) -> Router {
+        app_in_memory_with_gui(Some(gui_dir))
+    }
+
+    /// Helper to send a GET request to a specific app instance.
+    async fn get_from(app: Router, uri: &str) -> axum::response::Response {
+        app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// Helper to read a response body as a string.
+    async fn body_string(response: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn static_serves_index_html_at_root() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("SPA"), "expected index.html content");
+    }
+
+    #[tokio::test]
+    async fn static_serves_css_with_correct_mime() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/style.css").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(ct.contains("text/css"), "expected text/css, got {ct}");
+        let body = body_string(resp).await;
+        assert!(body.contains("color: red"));
+    }
+
+    #[tokio::test]
+    async fn static_serves_js_from_subdirectory() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/assets/app.js").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            ct.contains("javascript"),
+            "expected javascript MIME type, got {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_spa_fallback_serves_index_for_unknown_path() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/some/spa/route").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("SPA"), "SPA fallback should serve index.html");
+    }
+
+    #[tokio::test]
+    async fn static_api_routes_take_priority() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/health").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert_eq!(json["status"], "ok", "API route should take priority over static files");
+    }
+
+    #[tokio::test]
+    async fn static_stats_route_takes_priority() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/stats").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        assert!(
+            json["resource_count"].is_number(),
+            "stats API route should take priority"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_server_starts_without_gui_dir() {
+        let nonexistent = std::path::PathBuf::from("/tmp/relava-nonexistent-gui-dir");
+        let app = app_in_memory_with_gui(Some(&nonexistent));
+        let resp = get_from(app, "/health").await;
+        assert_eq!(resp.status(), StatusCode::OK, "server works without GUI dir");
+    }
+
+    #[tokio::test]
+    async fn static_no_gui_dir_returns_404_for_unknown() {
+        // Without GUI dir, unknown routes still 404
+        let resp = get("/nonexistent").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
