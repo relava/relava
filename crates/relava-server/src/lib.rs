@@ -577,7 +577,10 @@ mod tests {
         let resp = get_from(app, "/health").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
-        assert_eq!(json["status"], "ok", "API route should take priority over static files");
+        assert_eq!(
+            json["status"], "ok",
+            "API route should take priority over static files"
+        );
     }
 
     #[tokio::test]
@@ -598,7 +601,11 @@ mod tests {
         let nonexistent = std::path::PathBuf::from("/tmp/relava-nonexistent-gui-dir");
         let app = app_in_memory_with_gui(Some(&nonexistent));
         let resp = get_from(app, "/health").await;
-        assert_eq!(resp.status(), StatusCode::OK, "server works without GUI dir");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "server works without GUI dir"
+        );
     }
 
     #[tokio::test]
