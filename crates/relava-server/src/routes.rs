@@ -355,6 +355,99 @@ async fn get_version(
     }
 }
 
+/// Per-file checksum entry in the checksums response.
+#[derive(Debug, Serialize, Deserialize)]
+struct FileChecksumEntry {
+    path: String,
+    sha256: String,
+}
+
+/// Response from the checksums endpoint.
+#[derive(Debug, Serialize)]
+struct ChecksumsResponse {
+    version: String,
+    files: Vec<FileChecksumEntry>,
+}
+
+/// GET /api/v1/resources/:type/:name/versions/:version/checksums
+///
+/// Returns per-file SHA-256 checksums for a published version.
+/// Used by the CLI for change detection before publishing.
+async fn get_version_checksums(
+    State(state): State<Arc<AppState>>,
+    Path((rtype, name, version)): Path<(String, String, String)>,
+) -> Response {
+    let rt = match validate_resource_path(&rtype, &name) {
+        Ok(rt) => rt,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = parse_version(&version) {
+        return resp;
+    }
+
+    let store = match acquire_store(&state) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let resource = match store.get_resource(None, &name, rt) {
+        Ok(r) => r,
+        Err(e) => return store_err(e),
+    };
+
+    let ver = match store.get_version(resource.id, &version) {
+        Ok(v) => v,
+        Err(e) => return store_err(e),
+    };
+
+    // Legacy versions without manifest_json have no checksums to return.
+    let manifest_str = match ver.manifest_json.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new(format!(
+                    "no checksums available for {rtype}/{name}@{version} (legacy version)"
+                ))),
+            )
+                .into_response();
+        }
+    };
+
+    // Parse per-file checksums from manifest_json, propagating corrupt data as 500.
+    let log_and_500 = |detail: &str, err: &dyn std::fmt::Display| -> Response {
+        let label = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {detail}")
+        };
+        eprintln!(
+            "[relava-server] corrupt manifest_json{label} for {rtype}/{name}@{version}: {err}"
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("internal server error")),
+        )
+            .into_response()
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(manifest_str) {
+        Ok(v) => v,
+        Err(e) => return log_and_500("", &e),
+    };
+
+    let files_val = parsed.get("files").cloned().unwrap_or_default();
+    let files: Vec<FileChecksumEntry> = match serde_json::from_value(files_val) {
+        Ok(f) => f,
+        Err(e) => return log_and_500("files", &e),
+    };
+
+    Json(ChecksumsResponse {
+        version: ver.version,
+        files,
+    })
+    .into_response()
+}
+
 /// GET /api/v1/resolve/:type/:name?version=<ver>
 async fn resolve_deps(
     State(state): State<Arc<AppState>>,
@@ -652,13 +745,32 @@ async fn publish_resource(
         updated_at: None,
     };
 
+    // Store per-file checksums in manifest_json for change detection
+    let file_checksums: Vec<serde_json::Value> = metadata
+        .files
+        .iter()
+        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256 }))
+        .collect();
+    let manifest_json = match serde_json::to_string(&serde_json::json!({ "files": file_checksums }))
+    {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("[relava-server] failed to serialize manifest_json: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal server error")),
+            )
+                .into_response();
+        }
+    };
+
     let version = Version {
         id: 0,
         resource_id: 0,
         version: version_str.clone(),
         store_path: Some(store_path),
         checksum: Some(overall_checksum),
-        manifest_json: None,
+        manifest_json,
         published_by: None,
         published_at: None,
     };
@@ -971,6 +1083,10 @@ pub fn resource_routes() -> Router<Arc<AppState>> {
         .route(
             "/resources/{type}/{name}/versions/{version}/download",
             get(download_version),
+        )
+        .route(
+            "/resources/{type}/{name}/versions/{version}/checksums",
+            get(get_version_checksums),
         )
         .route("/resolve/{type}/{name}", get(resolve_deps))
 }
@@ -2364,5 +2480,101 @@ mod tests {
                 .unwrap()
                 .contains("declared in metadata but not uploaded")
         );
+    }
+
+    // -- Checksums endpoint tests --
+
+    #[tokio::test]
+    async fn get_checksums_returns_per_file_hashes() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        let manifest = r#"{"files":[{"path":"SKILL.md","sha256":"abc123"},{"path":"lib/utils.md","sha256":"def456"}]}"#;
+        publish(&store, "skill", "denden", "1.0.0", Some(manifest));
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resources/skill/denden/versions/1.0.0/checksums",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["version"], "1.0.0");
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], "SKILL.md");
+        assert_eq!(files[0]["sha256"], "abc123");
+    }
+
+    #[tokio::test]
+    async fn get_checksums_legacy_version_returns_404() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        // Publish without manifest_json (legacy)
+        publish(&store, "skill", "denden", "0.1.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resources/skill/denden/versions/0.1.0/checksums",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = json_body(resp).await;
+        let error_msg = body["error"].as_str().unwrap();
+        assert!(
+            error_msg.contains("legacy version"),
+            "should mention legacy version, got: {error_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_checksums_corrupt_manifest_returns_500() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        // Publish with corrupt manifest_json
+        publish(
+            &store,
+            "skill",
+            "denden",
+            "1.0.0",
+            Some("not valid json{{{"),
+        );
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resources/skill/denden/versions/1.0.0/checksums",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn get_checksums_resource_not_found() {
+        let app = test_app();
+        let resp = send(
+            app,
+            "GET",
+            "/api/v1/resources/skill/nonexistent/versions/1.0.0/checksums",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_checksums_version_not_found() {
+        let store = SqliteResourceStore::open_in_memory().unwrap();
+        publish(&store, "skill", "denden", "1.0.0", None);
+
+        let resp = send(
+            app_with_store(store),
+            "GET",
+            "/api/v1/resources/skill/denden/versions/9.9.9/checksums",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

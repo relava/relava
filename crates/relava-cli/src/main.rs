@@ -338,6 +338,8 @@ fn main() {
             resource_type,
             name,
             path,
+            force,
+            yes,
         } => {
             let rt = install::parse_resource_type(&resource_type)
                 .unwrap_or_else(|e| exit_with_error(&e, cli.json));
@@ -349,6 +351,8 @@ fn main() {
                 path: path.as_ref().map(|p| std::path::Path::new(p.as_str())),
                 json: cli.json,
                 verbose: cli.verbose,
+                force,
+                yes,
             };
 
             match publish::run(&opts) {
