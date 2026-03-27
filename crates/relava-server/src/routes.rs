@@ -1402,6 +1402,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
         let app = Router::new()
             .nest("/api/v1", resource_routes())
@@ -1478,6 +1479,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
         Router::new()
             .nest("/api/v1", resource_routes())
@@ -1714,6 +1716,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             store: Mutex::new(store),
             blob_store: None,
+            config: None,
         });
         let app = Router::new()
             .nest("/api/v1", resource_routes())
