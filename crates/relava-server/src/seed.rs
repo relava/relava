@@ -185,14 +185,20 @@ fn seed_one(
         Err(e) => {
             // Compensating transaction: clean up the blob
             if let Err(cleanup_err) = blob_store.delete(&blob_path) {
-                eprintln!("[relava-server] seed: failed to clean up blob {blob_path}: {cleanup_err}");
+                eprintln!(
+                    "[relava-server] seed: failed to clean up blob {blob_path}: {cleanup_err}"
+                );
             }
             return Err(e);
         }
     }
 
     // 6. Logging
-    let suffix = if is_reseed { " (previously removed)" } else { "" };
+    let suffix = if is_reseed {
+        " (previously removed)"
+    } else {
+        ""
+    };
     eprintln!(
         "[relava-server] seeded default {}: {}@{version_str}{suffix}",
         bundled.resource_type, bundled.name
