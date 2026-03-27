@@ -330,39 +330,22 @@ fn main() {
             name,
             version,
         } => {
-            let rt = match install::parse_resource_type(&resource_type) {
-                Ok(rt) => rt,
-                Err(e) => exit_with_error(&e, cli.json),
-            };
+            // Validate the resource type locally before hitting the server
+            install::parse_resource_type(&resource_type)
+                .unwrap_or_else(|e| exit_with_error(&e, cli.json));
 
-            let project_dir = resolve_project_dir(cli.project.as_deref());
+            let api = api_client::ApiClient::new(&cli.server);
 
-            let client = registry::RegistryClient::new(&cli.server);
-            let cache_dir = dirs::home_dir()
-                .unwrap_or_else(|| {
-                    eprintln!("cannot determine home directory");
-                    std::process::exit(1);
-                })
-                .join(".relava")
-                .join("cache");
-            let cache = cache::DownloadCache::new(cache_dir);
-
-            // Merge --version flag into the version pins so the resolver
-            // uses it when resolving the root resource.
-            let mut version_pins = install::load_version_pins(&project_dir, rt);
-            if let Some(ref v) = version {
-                version_pins.insert(name.clone(), v.clone());
-            }
-
-            let provider =
-                resolver::RegistryDepProvider::new(&client, &cache, &project_dir, version_pins);
-
-            match resolver::resolve(&provider, rt, &name) {
+            match api.resolve_deps(&resource_type, &name, version.as_deref()) {
                 Ok(result) => {
                     if cli.json {
-                        print_json(&result.to_json_output());
+                        print_json(&result);
                     } else {
-                        print!("{}", result.tree.display());
+                        // Pretty-print the dependency tree
+                        println!("{}", result.root);
+                        for dep in &result.order {
+                            println!("  {} {}@{}", dep.resource_type, dep.name, dep.version);
+                        }
                     }
                 }
                 Err(e) => exit_with_error(&e.to_string(), cli.json),
