@@ -10,7 +10,10 @@ use std::time::Instant;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Json, Router, routing::{get, post}};
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use serde::Serialize;
 use tower_http::services::{ServeDir, ServeFile};
 

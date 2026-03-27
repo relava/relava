@@ -45,13 +45,14 @@ async fn main() -> ExitCode {
         cache_dir: relava_dir.cache_dir(),
     };
 
-    let app = match relava_server::app_with_config(&relava_dir.db_path(), Some(&gui_dir), Some(config)) {
-        Ok(app) => app,
-        Err(e) => {
-            eprintln!("[relava-server] failed to open database: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let app =
+        match relava_server::app_with_config(&relava_dir.db_path(), Some(&gui_dir), Some(config)) {
+            Ok(app) => app,
+            Err(e) => {
+                eprintln!("[relava-server] failed to open database: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let addr = format!("{host}:{port}");
 
