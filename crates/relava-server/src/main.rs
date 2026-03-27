@@ -33,7 +33,7 @@ async fn main() -> ExitCode {
     }
 
     // Determine GUI directory: RELAVA_GUI_DIR env var overrides the default.
-    let gui_dir: PathBuf = std::env::var("RELAVA_GUI_DIR")
+    let gui_dir = std::env::var("RELAVA_GUI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| relava_dir.gui_dir());
 

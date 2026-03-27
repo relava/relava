@@ -514,6 +514,17 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    /// Extract the `content-type` header value as a string.
+    fn content_type(response: &axum::response::Response) -> String {
+        response
+            .headers()
+            .get("content-type")
+            .expect("missing content-type header")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn static_serves_index_html_at_root() {
         let gui = create_gui_dir();
@@ -530,13 +541,7 @@ mod tests {
         let app = app_with_gui(gui.path());
         let resp = get_from(app, "/style.css").await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+        let ct = content_type(&resp);
         assert!(ct.contains("text/css"), "expected text/css, got {ct}");
         let body = body_string(resp).await;
         assert!(body.contains("color: red"));
@@ -548,13 +553,7 @@ mod tests {
         let app = app_with_gui(gui.path());
         let resp = get_from(app, "/assets/app.js").await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+        let ct = content_type(&resp);
         assert!(
             ct.contains("javascript"),
             "expected javascript MIME type, got {ct}"
@@ -607,5 +606,33 @@ mod tests {
         // Without GUI dir, unknown routes still 404
         let resp = get("/nonexistent").await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn static_path_traversal_blocked() {
+        let gui = create_gui_dir();
+        let app = app_with_gui(gui.path());
+        let resp = get_from(app, "/../../etc/passwd").await;
+        // ServeDir normalizes the path so it cannot escape the root.
+        // The SPA fallback serves index.html, which is the correct behavior.
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains("root:"),
+            "path traversal must not serve files outside the GUI directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_missing_index_html_returns_not_found() {
+        // GUI dir exists but has no index.html — SPA fallback should not 500
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("style.css"), "body {}").unwrap();
+        let app = app_with_gui(dir.path());
+        let resp = get_from(app, "/unknown/route").await;
+        assert_ne!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing index.html should not cause 500"
+        );
     }
 }

@@ -255,6 +255,17 @@ pub fn start(
     }
 }
 
+/// Build a `Command` for the server binary with standard env vars set.
+fn server_command(binary: &Path, port: u16, gui_dir: Option<&str>) -> Command {
+    let mut cmd = Command::new(binary);
+    cmd.env("RELAVA_PORT", port.to_string())
+        .env("RELAVA_HOST", "127.0.0.1");
+    if let Some(dir) = gui_dir {
+        cmd.env("RELAVA_GUI_DIR", dir);
+    }
+    cmd
+}
+
 /// Start the server in daemon (background) mode.
 fn start_daemon(
     binary: &Path,
@@ -275,14 +286,7 @@ fn start_daemon(
         .try_clone()
         .map_err(|e| format!("failed to clone log file handle: {e}"))?;
 
-    let mut cmd = Command::new(binary);
-    cmd.env("RELAVA_PORT", port.to_string())
-        .env("RELAVA_HOST", "127.0.0.1");
-    if let Some(dir) = gui_dir {
-        cmd.env("RELAVA_GUI_DIR", dir);
-    }
-
-    let child = cmd
+    let child = server_command(binary, port, gui_dir)
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_log))
         .spawn()
@@ -344,14 +348,7 @@ fn start_foreground(
     json: bool,
     _verbose: bool,
 ) -> Result<(), String> {
-    let mut cmd = Command::new(binary);
-    cmd.env("RELAVA_PORT", port.to_string())
-        .env("RELAVA_HOST", "127.0.0.1");
-    if let Some(dir) = gui_dir {
-        cmd.env("RELAVA_GUI_DIR", dir);
-    }
-
-    let mut child = cmd
+    let mut child = server_command(binary, port, gui_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()

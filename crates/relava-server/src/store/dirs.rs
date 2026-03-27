@@ -14,6 +14,7 @@ use relava_types::validate::ResourceType;
 ///     commands/<name>/<version>/
 ///     rules/<name>/<version>/
 ///   cache/
+///   gui/
 ///   logs/
 /// ```
 pub struct RelavaDir {
