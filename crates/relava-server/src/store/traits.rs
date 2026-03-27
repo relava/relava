@@ -43,7 +43,23 @@ pub trait ResourceStore {
         resource_type: ResourceType,
     ) -> Result<Resource, StoreError>;
 
+    fn list_resources(
+        &self,
+        resource_type: Option<ResourceType>,
+    ) -> Result<Vec<Resource>, StoreError>;
+
+    fn create_resource(&self, resource: &Resource) -> Result<Resource, StoreError>;
+
+    fn delete_resource(
+        &self,
+        scope: Option<&str>,
+        name: &str,
+        resource_type: ResourceType,
+    ) -> Result<(), StoreError>;
+
     fn list_versions(&self, resource_id: i64) -> Result<Vec<Version>, StoreError>;
+
+    fn get_version(&self, resource_id: i64, version: &str) -> Result<Version, StoreError>;
 
     fn publish(&self, resource: &Resource, version: &Version) -> Result<(), StoreError>;
 

@@ -1,26 +1,49 @@
+pub mod routes;
 pub mod store;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::extract::State;
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
 
+use store::db::SqliteResourceStore;
+
 /// Shared application state available to all handlers.
-#[derive(Clone)]
 pub struct AppState {
-    started_at: Instant,
+    pub started_at: Instant,
+    pub store: Mutex<SqliteResourceStore>,
 }
 
 /// Build the Relava API router with shared state.
-pub fn app() -> Router {
+///
+/// Opens (or creates) the SQLite database at `db_path` and wires all routes.
+pub fn app(db_path: &std::path::Path) -> Result<Router, store::StoreError> {
+    let store = SqliteResourceStore::open(db_path)?;
     let state = Arc::new(AppState {
         started_at: Instant::now(),
+        store: Mutex::new(store),
+    });
+
+    Ok(Router::new()
+        .route("/health", get(health))
+        .nest("/api/v1", routes::resource_routes())
+        .with_state(state))
+}
+
+/// Build a test router with an in-memory SQLite store (for testing only).
+#[cfg(test)]
+pub fn app_in_memory() -> Router {
+    let store = SqliteResourceStore::open_in_memory().unwrap();
+    let state = Arc::new(AppState {
+        started_at: Instant::now(),
+        store: Mutex::new(store),
     });
 
     Router::new()
         .route("/health", get(health))
+        .nest("/api/v1", routes::resource_routes())
         .with_state(state)
 }
 
@@ -82,7 +105,7 @@ mod tests {
 
     /// Send a GET request to the given URI and return the response.
     async fn get(uri: &str) -> axum::response::Response {
-        app()
+        app_in_memory()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
             .unwrap()

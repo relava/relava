@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use relava_server::store::RelavaDir;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -16,8 +17,29 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Set up the ~/.relava/ directory structure and open the database.
+    let relava_dir = match RelavaDir::default_location() {
+        Some(d) => d,
+        None => {
+            eprintln!("[relava-server] cannot determine home directory");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = relava_dir.ensure_dirs() {
+        eprintln!("[relava-server] failed to create data directories: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let app = match relava_server::app(&relava_dir.db_path()) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("[relava-server] failed to open database: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let addr = format!("{host}:{port}");
-    let app = relava_server::app();
 
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
