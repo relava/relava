@@ -1,0 +1,49 @@
+---
+title: "relava cache"
+description: "Manage the download cache for faster re-installs."
+---
+
+# relava cache
+
+View and manage the local download cache. Relava caches downloaded resources in `~/.relava/cache/` to speed up reinstallation.
+
+## Commands
+
+### cache status
+
+Show cache disk usage.
+
+```bash
+relava cache status
+```
+
+Displays the number of cached items and total disk space used.
+
+### cache clean
+
+Remove cached downloads.
+
+```bash
+relava cache clean [--older-than <duration>]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--older-than <duration>` | Only remove items older than this duration (e.g., `7d`, `30d`, `1h`) | Remove all |
+
+## Examples
+
+```bash
+# Check cache size
+relava cache status
+
+# Clean everything
+relava cache clean
+
+# Clean items older than 7 days
+relava cache clean --older-than 7d
+```
+
+## Cache Location
+
+The cache is stored at `~/.relava/cache/`. It contains downloaded resource files organized by type, name, and version. The cache is safe to delete at any time — resources will be re-downloaded from the registry on next install.

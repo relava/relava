@@ -1,0 +1,64 @@
+---
+title: "relava validate"
+description: "Validate a resource offline before publishing."
+---
+
+# relava validate
+
+Run offline validation checks on a resource to catch issues before publishing to the registry.
+
+## Usage
+
+```bash
+relava validate <type> <path>
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `path` | Path to the resource directory or file |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output validation results as JSON |
+
+## Checks Performed
+
+| Check | Description |
+|-------|-------------|
+| **Slug format** | Name must be 1-64 lowercase alphanumeric characters with hyphens. No leading/trailing hyphens, no consecutive hyphens. |
+| **Directory structure** | Skills must have a `SKILL.md`. Agents, commands, and rules must be single `.md` files. |
+| **Frontmatter** | YAML frontmatter must be valid. Checks for `metadata.relava` structure if present. |
+| **File limits** | Max 100 files, 10 MB per individual file, 50 MB total size. |
+| **Binary detection** | Binary files are rejected (detected via null-byte probe in file contents). |
+| **Semver format** | If a version is specified in frontmatter, it must be valid semver. |
+| **Dependencies** | Dependency names in `metadata.relava` must be valid slugs. |
+
+## Examples
+
+```bash
+# Validate a skill directory
+relava validate skill ./my-skill/
+
+# Validate with JSON output
+relava validate agent ./my-agent.md --json
+```
+
+## Output
+
+Each check shows `[ok]` or `[FAIL]` with a description:
+
+```
+Validating skill at ./my-skill/...
+  [ok]    Slug format: my-skill
+  [ok]    Directory structure: SKILL.md found
+  [ok]    Frontmatter: valid YAML
+  [ok]    File limits: 5 files, 12.3 KB total
+  [ok]    No binary files
+  [ok]    Dependencies: 2 valid slugs
+All checks passed.
+```

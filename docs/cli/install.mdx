@@ -1,0 +1,118 @@
+---
+title: "relava install"
+description: "Install a resource from the registry, or install all resources from relava.toml."
+---
+
+# relava install
+
+Install resources from the registry into your project.
+
+## Usage
+
+```bash
+# Install a single resource
+relava install <type> <name> [--version <ver>] [--save] [--global] [--yes]
+
+# Install all resources from manifest
+relava install relava.toml
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--version <ver>` | Install a specific version | Latest |
+| `--save` | Write the resource and pinned version to `relava.toml` | Off |
+| `--global` | Install to `~/.claude/` instead of the project | Off |
+| `--yes` | Skip confirmation prompts (tool installs) | Off |
+
+## Examples
+
+### Install a single resource
+
+```bash
+relava install skill denden
+```
+
+Installs the latest version of the `denden` skill to `.claude/skills/denden/`.
+
+### Pin and save to manifest
+
+```bash
+relava install skill denden --save
+```
+
+Installs the skill and adds `denden = "1.2.0"` to the `[skills]` section of `relava.toml`.
+
+### Install a specific version
+
+```bash
+relava install agent debugger --version 0.5.0
+```
+
+### Install all resources from manifest
+
+```bash
+relava install relava.toml
+```
+
+Reads every resource declared in `relava.toml` and installs them at the pinned versions. This is the recommended way for collaborators to set up a project.
+
+### Install globally
+
+```bash
+relava install rule no-console-log --global
+```
+
+Installs to `~/.claude/rules/no-console-log.md` so the rule applies to all projects.
+
+## Dependency Resolution
+
+When a resource declares dependencies in its `metadata.relava` frontmatter, Relava automatically resolves and installs them transitively:
+
+```bash
+$ relava install skill code-review
+Installing skill code-review@1.0.0...
+  [skill]   .claude/skills/code-review/SKILL.md + 2 files
+  [dep]     Installing skill security-baseline@1.0.0...
+  [dep]     Installing skill style-guide@2.1.0...
+Installed skill code-review@1.0.0
+```
+
+Each transitive dependency resolves to the version pinned in `relava.toml`, or the latest version if not pinned.
+
+## Tool Installation
+
+Resources can declare system tool dependencies. During install, Relava checks if each tool exists on your `PATH` and offers to install missing ones:
+
+```bash
+$ relava install skill code-review
+Installing skill code-review@1.0.0...
+  [tool]    gh — not found on PATH
+            Install with: brew install gh? [Y/n] y
+  [tool]    gh — installed
+```
+
+Use `--yes` to auto-confirm tool installations. Tool install failures are non-fatal — the resource is still installed.
+
+## Environment Variable Checks
+
+Resources can declare required environment variables. Relava warns about missing ones but does not block installation:
+
+```bash
+$ relava install skill code-review
+  [warn]    Missing required env: GITHUB_TOKEN
+            Set in .claude/settings.json under "env"
+Installed skill code-review@1.0.0
+```
+
+## Caching
+
+Downloaded resources are cached in `~/.relava/cache/` for faster re-installs. Use `relava cache status` and `relava cache clean` to manage the cache.

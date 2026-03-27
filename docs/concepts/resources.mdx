@@ -1,0 +1,116 @@
+---
+title: "Resource Types"
+description: "The four resource types Relava manages: skills, agents, commands, and rules."
+---
+
+# Resource Types
+
+Relava manages four types of Claude Code resources. Each type corresponds to a standard Claude Code extension mechanism.
+
+## Skills
+
+Skills are **multi-file directories** that provide Claude with specialized knowledge and capabilities.
+
+**Structure:**
+```
+my-skill/
+  SKILL.md           # Skill definition with frontmatter (required)
+  README.md          # Documentation (recommended)
+  templates/         # Support files
+  lib/               # Additional code/data
+```
+
+**Install location:** `.claude/skills/<name>/SKILL.md`
+
+**Global install:** `~/.claude/skills/<name>/SKILL.md`
+
+Skills are the most complex resource type — they can contain templates, example code, configuration files, and any other supporting material that Claude needs.
+
+## Agents
+
+Agents are **single `.md` files** that define specialized AI agent behaviors with specific tools, models, and instructions.
+
+**Structure:**
+```
+orchestrator.md      # Agent definition with frontmatter
+```
+
+**Install location:** `.claude/agents/<name>.md`
+
+**Example frontmatter:**
+```yaml
+---
+name: orchestrator
+description: Coordinates feature development workflow
+tools: Agent, Glob, Grep, Read
+model: sonnet
+metadata:
+  relava:
+    skills:
+      - notify-slack
+      - code-review
+    agents:
+      - debugger
+---
+```
+
+Agents can declare dependencies on skills and other agents via `metadata.relava`.
+
+## Commands
+
+Commands are **single `.md` files** that define reusable prompts invocable as slash commands in Claude Code.
+
+**Structure:**
+```
+commit.md            # Command definition
+```
+
+**Install location:** `.claude/commands/<name>.md`
+
+Commands are invoked in Claude Code as `/<name>` (e.g., `/commit`). They provide structured prompts for common workflows.
+
+## Rules
+
+Rules are **single `.md` files** that define constraints and guidelines Claude must follow.
+
+**Structure:**
+```
+no-console-log.md    # Rule definition
+```
+
+**Install location:** `.claude/rules/<name>.md`
+
+Rules are always active — Claude Code loads them into context automatically. Use them for coding standards, security policies, and project conventions.
+
+## Install Locations Summary
+
+| Type | Project Install | Global Install |
+|------|----------------|----------------|
+| Skills | `.claude/skills/<name>/` | `~/.claude/skills/<name>/` |
+| Agents | `.claude/agents/<name>.md` | `~/.claude/agents/<name>.md` |
+| Commands | `.claude/commands/<name>.md` | `~/.claude/commands/<name>.md` |
+| Rules | `.claude/rules/<name>.md` | `~/.claude/rules/<name>.md` |
+
+## Disabled Resources
+
+Disabled resources are moved to `.disabled/` subdirectories:
+
+| Type | Disabled Location |
+|------|-------------------|
+| Skills | `.claude/skills/.disabled/<name>/` |
+| Agents | `.claude/agents/.disabled/<name>.md` |
+| Commands | `.claude/commands/.disabled/<name>.md` |
+| Rules | `.claude/rules/.disabled/<name>.md` |
+
+Claude Code does not scan `.disabled/` directories, so disabled resources are invisible to the assistant but remain on disk.
+
+## Resource Naming (Slugs)
+
+All resource names must follow the slug format:
+
+- 1–64 characters
+- Lowercase alphanumeric and hyphens only
+- Must start and end with a letter or digit
+- No consecutive hyphens
+
+This ensures URL-safety and cross-platform filesystem compatibility.

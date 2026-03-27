@@ -1,0 +1,49 @@
+---
+title: "relava import"
+description: "Import an existing resource from the filesystem into the registry."
+---
+
+# relava import
+
+Import a resource that already exists on your filesystem into the registry, making it available for `relava install`.
+
+## Usage
+
+```bash
+relava import <type> <path> [--version <ver>]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `path` | Path to the resource directory (skill) or `.md` file (agent, command, rule) |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--version <ver>` | Version to assign | `1.0.0` |
+
+## Examples
+
+### Import an existing skill
+
+```bash
+relava import skill ./my-existing-skill/
+```
+
+Reads the skill directory, derives the resource name from the directory name (e.g., `my-existing-skill`), and publishes it to the local registry as version `1.0.0`. The version is extracted from the frontmatter if present, otherwise defaults to `1.0.0`.
+
+### Import with a specific version
+
+```bash
+relava import agent ./agents/orchestrator.md --version 2.0.0
+```
+
+## Use Cases
+
+- **Bootstrap the registry** — import skills and agents you've already built manually
+- **Migration** — move from manually-managed `.claude/` resources to Relava-managed ones
+- **Sharing** — import a resource from one project so other projects can install it

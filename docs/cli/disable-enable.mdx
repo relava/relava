@@ -1,0 +1,54 @@
+---
+title: "relava disable / enable"
+description: "Temporarily deactivate or reactivate resources without uninstalling them."
+---
+
+# relava disable / enable
+
+Temporarily deactivate a resource without removing it from the project. Re-enable it when you're ready to use it again.
+
+## Usage
+
+```bash
+# Disable a resource
+relava disable <type> <name>
+
+# Re-enable a resource
+relava enable <type> <name>
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Examples
+
+```bash
+# Disable a skill temporarily
+relava disable skill denden
+
+# Re-enable it later
+relava enable skill denden
+```
+
+## How It Works
+
+Disabling a resource moves it to a `.disabled/` subdirectory within its type directory:
+
+| Type | Active Location | Disabled Location |
+|------|----------------|-------------------|
+| Skill | `.claude/skills/denden/` | `.claude/skills/.disabled/denden/` |
+| Agent | `.claude/agents/debugger.md` | `.claude/agents/.disabled/debugger.md` |
+| Command | `.claude/commands/commit.md` | `.claude/commands/.disabled/commit.md` |
+| Rule | `.claude/rules/no-console-log.md` | `.claude/rules/.disabled/no-console-log.md` |
+
+Claude Code doesn't scan `.disabled/` directories, so disabled resources are invisible to the AI assistant but remain on disk for instant re-enabling.
+
+## Use Cases
+
+- **Debugging** — disable a skill that might be causing unexpected behavior
+- **Performance** — reduce context size by disabling resources you're not actively using
+- **A/B testing** — compare Claude's behavior with and without a specific resource

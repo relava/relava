@@ -1,0 +1,62 @@
+---
+title: "relava publish"
+description: "Publish a resource to the local registry."
+---
+
+# relava publish
+
+Publish a resource to the registry so it can be installed by `relava install`.
+
+## Usage
+
+```bash
+relava publish <type> <name> [--path <dir>] [--force] [--yes]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--path <dir>` | Path to the resource directory or file | None (required for skills) |
+| `--force` | Skip change detection and publish regardless | Off |
+| `--yes` | Skip confirmation prompts | Off |
+
+## Examples
+
+### Publish a skill
+
+```bash
+relava publish skill my-skill --path ./my-skill/
+```
+
+### Force republish (skip change detection)
+
+```bash
+relava publish skill my-skill --path ./my-skill/ --force
+```
+
+By default, Relava detects whether files have changed since the last publish (via SHA-256 checksums) and skips publishing if nothing changed. Use `--force` to bypass this check.
+
+## Validation
+
+Before publishing, Relava validates the resource:
+
+- **Slug format** — name must be lowercase alphanumeric with hyphens, 1-64 characters
+- **Required files** — skills must have a `SKILL.md`; agents, commands, and rules must be single `.md` files
+- **Frontmatter** — must be valid YAML
+- **File limits** — max 100 files, 10 MB per file, 50 MB total
+- **No binaries** — binary files are rejected (detected via null-byte probe)
+- **Semver** — version must be valid semantic versioning
+
+Use `relava validate` to check these rules offline before publishing.
+
+## Where Resources Go
+
+Published resources are stored in the server's resource store at `~/.relava/store/<type>/<name>/<version>/`. The CLI never accesses this directory directly — all operations go through the REST API.

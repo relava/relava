@@ -1,0 +1,58 @@
+---
+title: "relava doctor"
+description: "Check installation and project health."
+---
+
+# relava doctor
+
+Run health checks on your Relava installation and project configuration.
+
+## Usage
+
+```bash
+relava doctor
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output results as JSON |
+
+## Health Checks
+
+| Check | Description |
+|-------|-------------|
+| **Registry connectivity** | Verifies the server is reachable via a health check call |
+| **Manifest validation** | Checks `relava.toml` for syntax errors, invalid slugs, and bad version constraints |
+| **Installed files** | Scans all resource type directories and verifies expected files exist (e.g., `SKILL.md` for skills, `.md` files for agents/commands/rules) |
+| **Cross-reference sync** | Verifies that resources in `relava.toml` match what's actually installed on disk — reports manifest entries missing from disk and orphaned resources on disk that are not in the manifest |
+
+## Output
+
+Each check displays `[ok]`, `[warn]`, or `[FAIL]`:
+
+```
+Relava Doctor
+  [ok]    Registry: connected to localhost:7420
+  [ok]    Manifest: relava.toml is valid
+  [warn]  Files: skill 'old-skill' not found on disk
+  [ok]    Cross-ref: manifest and disk are in sync
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All checks passed (warnings are allowed) |
+| `1` | One or more checks failed |
+
+## Examples
+
+```bash
+# Quick health check
+relava doctor
+
+# Machine-readable output
+relava doctor --json
+```

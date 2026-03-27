@@ -1,0 +1,54 @@
+---
+title: "relava search"
+description: "Search the registry for available resources."
+---
+
+# relava search
+
+Search the registry for resources by keyword.
+
+## Usage
+
+```bash
+relava search <query> [--type <type>]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `query` | Search term to match against resource names and descriptions |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--type <type>` | Filter results by resource type: `skill`, `agent`, `command`, or `rule` |
+| `--json` | Output as JSON |
+
+## Examples
+
+```bash
+# Search for anything related to "notify"
+relava search notify
+
+# Search only skills
+relava search review --type skill
+
+# JSON output for scripting
+relava search deploy --json
+```
+
+## Output
+
+Displays a formatted table of matching resources:
+
+```
+Type     Name              Version    Description
+skill    notify-slack      1.0.0      Send Slack notifications from Claude
+skill    notify-email      0.2.0      Email notification skill
+```
+
+## How Search Works
+
+The registry uses SQLite FTS5 (full-text search) to match your query against resource names and descriptions. Results are ranked by relevance.

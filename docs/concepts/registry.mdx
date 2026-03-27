@@ -1,0 +1,135 @@
+---
+title: "Registry"
+description: "The local registry server: REST API, resource store, SQLite database, and web GUI."
+---
+
+# Registry
+
+The Relava registry server is a local HTTP server that stores published resources and serves them to the CLI and web GUI.
+
+## Starting the Server
+
+```bash
+# Start as daemon (background process)
+relava server start --daemon
+
+# Start in foreground
+relava server start
+
+# Custom port
+relava server start --port 8080
+```
+
+The server runs at `http://localhost:7420` by default.
+
+## Storage Layout
+
+```
+~/.relava/
+  db.sqlite            # Resource metadata (SQLite)
+  store/               # Published resource files
+    skills/
+      denden/
+        1.0.0/         # Version directory
+          SKILL.md
+          templates/...
+        1.2.0/
+          SKILL.md
+          templates/...
+    agents/
+      debugger/
+        0.5.0/
+          debugger.md
+  cache/               # CLI download cache
+  server.pid           # Daemon PID file
+  server.log           # Daemon logs
+```
+
+Resources are stored as-is — no archives or compression. Each version gets its own directory.
+
+## REST API
+
+Base URL: `http://localhost:7420/api/v1`
+
+### Resource Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/resources` | List all resources. Query: `?q=search&type=skill` |
+| `GET` | `/resources/:type/:name` | Get resource details |
+| `POST` | `/resources/:type/:name` | Create a resource |
+| `DELETE` | `/resources/:type/:name` | Delete a resource |
+| `POST` | `/resources/:type/:name/publish` | Publish a new version (multipart upload) |
+| `GET` | `/resources/:type/:name/versions` | List all versions |
+| `GET` | `/resources/:type/:name/versions/:version` | Get version details |
+| `GET` | `/resources/:type/:name/versions/:version/download` | Download version files |
+| `GET` | `/resources/:type/:name/versions/:version/checksums` | Get file checksums for a version |
+| `GET` | `/resolve/:type/:name` | Resolve dependency tree. Query: `?version=1.0.0` |
+| `POST` | `/updates/check` | Batch check for available updates |
+
+### Additional Server Endpoints
+
+These endpoints are served at the root level (not under `/api/v1`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Server health check |
+| `GET` | `/stats` | Resource count statistics and database size |
+| `GET` | `/config` | Server configuration (host, port, data/cache dirs) |
+| `POST` | `/cache/clean` | Clean the server-side cache |
+
+### Search
+
+```bash
+GET /api/v1/resources?q=notify&type=skill
+```
+
+Search uses SQLite FTS5 full-text search across resource names and descriptions.
+
+### Health Check
+
+```bash
+GET /health
+```
+
+Returns server status, version, uptime, and database connectivity:
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "uptime_secs": 3600,
+  "database_connected": true
+}
+```
+
+The `status` field is `"ok"` when the database is healthy, or `"degraded"` if the database probe fails.
+
+## SQLite Database
+
+The server stores resource metadata in SQLite (`~/.relava/db.sqlite`):
+
+**resources table** — one row per resource (name, type, description, latest version)
+
+**versions table** — one row per published version (version string, store path, checksum, publish timestamp)
+
+The CLI never accesses the database directly — all queries go through the REST API.
+
+## Web GUI
+
+The server serves a React SPA at the root URL (`http://localhost:7420`):
+
+- **Dashboard** — resource count statistics and recent activity
+- **Resource Browser** — searchable, filterable list of all published resources
+- **Resource Detail** — rendered markdown, version history, dependency information
+- **Settings** — server status, cache management, configuration
+
+## Enterprise Registry
+
+The same CLI works against any Relava-compatible server. To use an enterprise registry:
+
+```bash
+relava --server https://registry.company.com install skill deploy-check
+```
+
+The server itself can be configured via environment variables `RELAVA_HOST` (default `127.0.0.1`), `RELAVA_PORT` (default `7420`), and `RELAVA_GUI_DIR` (default `~/.relava/gui/`).

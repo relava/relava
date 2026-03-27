@@ -1,0 +1,133 @@
+---
+title: "Dependencies"
+description: "How resources declare dependencies using metadata.relava frontmatter."
+---
+
+# Dependencies
+
+Resources can declare dependencies on other resources, system tools, and environment variables using the `metadata.relava` block in their YAML frontmatter.
+
+## metadata.relava Frontmatter
+
+Dependencies are declared in the resource's `.md` file frontmatter, following the [Agent Skills specification](https://agentskills.io/specification):
+
+```yaml
+---
+name: code-review
+description: Comprehensive code review with security and style checks
+metadata:
+  relava:
+    skills:
+      - security-baseline
+      - style-guide
+    agents:
+      - debugger
+    tools:
+      gh:
+        description: GitHub CLI
+        install:
+          macos: brew install gh
+          linux: apt install gh
+          windows: winget install GitHub.cli
+    env:
+      GITHUB_TOKEN:
+        required: true
+        description: GitHub API token for PR access
+---
+```
+
+## Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `skills` | List of strings | Skill dependencies (resolved transitively) |
+| `agents` | List of strings | Agent dependencies (resolved transitively) |
+| `tools` | Map | System tool dependencies with OS-specific install commands |
+| `env` | Map | Environment variable requirements |
+
+## Resource Dependencies
+
+Resource dependencies are **names only** — no version pins. Version control belongs at the project level in `relava.toml`, not in the resource's frontmatter.
+
+```yaml
+metadata:
+  relava:
+    skills:
+      - notify-slack
+      - code-review
+    agents:
+      - debugger
+```
+
+When you run `relava install`, dependencies are resolved transitively. If `code-review` depends on `security-baseline`, and `security-baseline` depends on `naming-conventions`, all three are installed.
+
+Each dependency resolves to:
+1. The version pinned in the project's `relava.toml`, if present
+2. The latest version in the registry, if not pinned
+
+## Tool Dependencies
+
+Resources can declare system tools they need. During `relava install`, the CLI:
+
+1. Checks if each tool binary exists on `PATH`
+2. If missing, detects the current OS and looks up the install command
+3. Prompts for confirmation (skip with `--yes`)
+4. Executes the install command
+
+```yaml
+metadata:
+  relava:
+    tools:
+      gh:
+        description: GitHub CLI
+        install:
+          macos: brew install gh
+          linux: apt install gh
+          windows: winget install GitHub.cli
+```
+
+Tool installation failures are **non-fatal** — the resource is still installed with a warning.
+
+## Environment Variables
+
+Resources can declare required and optional environment variables:
+
+```yaml
+metadata:
+  relava:
+    env:
+      GITHUB_TOKEN:
+        required: true
+        description: GitHub API token for PR access
+      SLACK_WEBHOOK:
+        required: false
+        description: Slack webhook for notifications
+```
+
+On install, Relava warns about missing required variables but does not block installation. Use `relava doctor` to recheck all installed resources for missing environment variables.
+
+## Agent Example
+
+Agents can depend on skills and other agents:
+
+```yaml
+---
+name: orchestrator
+description: Coordinates feature development workflow
+tools: Agent, Glob, Grep, Read
+model: sonnet
+metadata:
+  relava:
+    skills:
+      - notify-slack
+      - code-review
+    agents:
+      - debugger
+---
+```
+
+## Design Decisions
+
+- **No per-resource version pins** — keeping version control at the project level (`relava.toml`) avoids conflicting pins and simplifies `relava update`
+- **No per-resource relava.toml** — all metadata lives in frontmatter, keeping resources self-contained
+- **metadata.relava namespace** — uses the `metadata` extension point from the Agent Skills spec, so Claude Code and other tools ignore it

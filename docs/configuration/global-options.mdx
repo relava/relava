@@ -1,0 +1,66 @@
+---
+title: "Global Options"
+description: "CLI flags available on every command: --server, --project, --verbose, --json, --no-update-check."
+---
+
+# Global Options
+
+These flags are available on every `relava` command.
+
+## --server
+
+```bash
+relava --server http://localhost:8080 install skill denden
+```
+
+Override the registry server URL. Defaults to `http://localhost:7420`.
+
+This is how you point the CLI at a different registry — whether it's a custom local port or an enterprise registry:
+
+```bash
+# Local server on custom port
+relava --server http://localhost:8080 search deploy
+
+# Enterprise registry
+relava --server https://registry.company.com install skill deploy-check
+```
+
+## --project
+
+```bash
+relava --project /path/to/project install relava.toml
+```
+
+Specify the project directory. Defaults to the current working directory. Useful for scripts that manage multiple projects.
+
+## --verbose
+
+```bash
+relava --verbose install skill denden
+```
+
+Enable verbose output for debugging. Shows additional details about HTTP requests, file operations, and dependency resolution.
+
+## --json
+
+```bash
+relava list --json
+```
+
+Output results as JSON instead of human-readable tables. Useful for scripting and piping to other tools like `jq`:
+
+```bash
+relava list --json | jq '.[] | select(.type == "skill") | .name'
+```
+
+Available on most commands: `list`, `info`, `search`, `doctor`, `server status`, `cache status`, and others.
+
+## --no-update-check
+
+```bash
+relava --no-update-check install skill denden
+```
+
+Skip the automatic check for newer resource versions after commands. By default, Relava checks the registry for updates to your installed resources and displays a notification if newer versions are available.
+
+Use this in CI/CD pipelines or scripts where you don't want the update check overhead.

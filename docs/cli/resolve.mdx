@@ -1,0 +1,54 @@
+---
+title: "relava resolve"
+description: "Display the dependency tree for a resource."
+---
+
+# relava resolve
+
+Show the full dependency tree for a resource, including all transitive dependencies.
+
+## Usage
+
+```bash
+relava resolve <type> <name> [--version <ver>]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `type` | Resource type: `skill`, `agent`, `command`, or `rule` |
+| `name` | Resource name (slug format) |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--version <ver>` | Resolve dependencies for a specific version | Latest |
+| `--json` | Output as JSON | Off |
+
+## Examples
+
+```bash
+# Show dependency tree
+relava resolve skill code-review
+```
+
+```
+skill code-review@1.0.0
+  skill security-baseline@1.0.0
+  skill style-guide@2.1.0
+    skill naming-conventions@1.0.0
+```
+
+```bash
+# Resolve a specific version
+relava resolve agent orchestrator --version 0.5.0
+```
+
+## Behavior
+
+- Queries the registry for the resource's `metadata.relava` frontmatter
+- Recursively resolves all declared `skills` and `agents` dependencies
+- Displays the tree with version numbers (pinned from `relava.toml` or latest)
+- Detects and reports circular dependencies

@@ -1,0 +1,127 @@
+---
+title: "Architecture"
+description: "How the CLI, registry server, and store work together."
+---
+
+# Architecture
+
+Relava has three main components: the **CLI**, the **registry server**, and the **project filesystem**. They interact through a REST API.
+
+## System Overview
+
+```
++------------------------------------------------------+
+|                   Developer Machine                   |
+|                                                       |
+|  +-------------+     +----------------------------+   |
+|  |  relava CLI  |---->|   Relava Registry Server   |   |
+|  +-------------+     |                            |   |
+|        |              |  REST API (:7420)          |   |
+|        |              |  Resource Store             |   |
+|  +-------------+     |  SQLite Metadata DB        |   |
+|  |  Relava GUI  |---->|  Web GUI                   |   |
+|  | (Browser)    |     +----------------------------+   |
+|  +-------------+                                     |
+|        |                                              |
+|        v                                              |
+|  +---------------------------------------------------+|
+|  |              Project Filesystem                    ||
+|  |  .claude/                                          ||
+|  |    skills/        <-- skill directories            ||
+|  |    agents/        <-- agent .md files              ||
+|  |    commands/      <-- command .md files             ||
+|  |    rules/         <-- rule .md files               ||
+|  |  relava.toml      <-- project manifest             ||
+|  |  relava.lock      <-- lockfile                     ||
+|  +---------------------------------------------------+|
+|                                                       |
+|  +---------------------------------------------------+|
+|  |         ~/.relava/  (Server State)                 ||
+|  |  store/            <-- published resource files    ||
+|  |  db.sqlite         <-- resource metadata           ||
+|  |  cache/            <-- download cache              ||
+|  |  server.pid        <-- daemon PID file             ||
+|  |  server.log        <-- daemon logs                 ||
+|  +---------------------------------------------------+|
++------------------------------------------------------+
+```
+
+## Component Responsibilities
+
+### Registry Server
+
+The server is a **pure resource registry**. It:
+
+- Stores published resources in `~/.relava/store/`
+- Maintains metadata in a SQLite database
+- Serves resources via REST API at `localhost:7420`
+- Hosts the web GUI for visual browsing
+- Provides full-text search via SQLite FTS5
+
+The server does **not** track projects, installations, or manage project files.
+
+### CLI
+
+The CLI is the **project-level manager**. It:
+
+- Reads the project's `relava.toml` manifest
+- Fetches resources from the server via REST API
+- Writes resource files to the project's `.claude/` directory
+- Requests dependency resolution from the server (via `GET /api/v1/resolve/:type/:name`) and installs the resolved tree
+- Manages the download cache (`~/.relava/cache/`)
+- Handles version pinning, lockfile generation, and update checks
+
+### Web GUI
+
+A React SPA served by the registry server. Features:
+
+- Dashboard with resource statistics
+- Resource browser with search, filter, and sort
+- Resource detail pages with rendered markdown
+- Settings page with server status and cache management
+
+## REST-First Design
+
+All CLI operations go through the server's REST API — there is no direct filesystem access to the store. If the server is not running, the CLI prints:
+
+```
+Server not reachable. Run 'relava server start' first.
+```
+
+This is intentional:
+
+- **Enterprise-ready** — the same CLI works against `localhost:7420` or `registry.company.com`
+- **Keeps the store opaque** — only the server reads/writes `~/.relava/store/` and SQLite
+- **Single code path** — no branching between "direct" and "server" modes
+- **Caching** — the CLI caches downloads locally for offline reinstalls
+
+## Crate Structure
+
+The project is a Cargo workspace with four crates:
+
+| Crate | Purpose | License |
+|-------|---------|---------|
+| `relava-types` | Shared types, validation, versioning, manifest parsing, file filtering | Apache-2.0 |
+| `relava-cli` | CLI binary — all commands, registry client, caching | Apache-2.0 |
+| `relava-server` | Registry server — REST API, storage (SQLite, blob store), GUI serving | ELv2 |
+| `relava-server-ext` | Cloud and enterprise extensions (future) | ELv2 |
+
+### Dependency graph
+
+```
+relava-cli        → relava-types
+relava-server     → relava-types
+relava-server-ext → relava-server, relava-types
+```
+
+`relava-types` is a pure logic library with zero I/O dependencies. The split licensing keeps shared types and the CLI open source (Apache-2.0) while protecting the server against competing managed services (ELv2).
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Workspace | Rust (4-crate Cargo workspace) |
+| CLI | clap, reqwest, comfy-table, colored |
+| Server | Axum, tokio, rusqlite |
+| GUI | React 19, Vite 8, Tailwind CSS 4, TanStack Query 5 |
+| CI | GitHub Actions |

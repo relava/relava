@@ -1,0 +1,129 @@
+---
+title: "Quick Start"
+description: "Install Relava, start the registry server, and install your first resource in under 2 minutes."
+---
+
+# Quick Start
+
+## 1. Install Relava
+
+Install the Relava CLI from source using Cargo:
+
+```bash
+cargo install --path crates/relava-cli
+```
+
+This installs the `relava` binary to your Cargo bin directory (typically `~/.cargo/bin/`).
+
+## 2. Start the Registry Server
+
+Relava uses a local registry server to store and serve resources. Start it as a background daemon:
+
+```bash
+relava server start --daemon
+```
+
+The server runs at `http://localhost:7420` by default. You can verify it's running:
+
+```bash
+relava server status
+```
+
+<Tip>
+  The server also hosts a web GUI at `http://localhost:7420` for browsing and searching resources visually.
+</Tip>
+
+## 3. Initialize Your Project
+
+Navigate to your project directory and initialize Relava:
+
+```bash
+cd my-project
+relava init
+```
+
+This creates a `relava.toml` manifest file in your project root:
+
+```toml
+agent_type = "claude"
+
+[skills]
+
+[agents]
+
+[commands]
+
+[rules]
+```
+
+## 4. Install a Resource
+
+Install a skill from the registry:
+
+```bash
+relava install skill denden --save
+```
+
+The `--save` flag writes the resource and its pinned version to `relava.toml`:
+
+```toml
+agent_type = "claude"
+
+[skills]
+denden = "1.2.0"
+```
+
+The skill files are installed to `.claude/skills/denden/`.
+
+## 5. Install More Resources
+
+```bash
+# Install an agent
+relava install agent debugger --save
+
+# Install a command
+relava install command commit --save
+
+# Install a rule
+relava install rule no-console-log --save
+```
+
+## 6. Share Your Setup
+
+Commit `relava.toml` to version control. Collaborators reproduce your exact setup with:
+
+```bash
+relava install relava.toml
+```
+
+This installs every resource declared in the manifest at the pinned versions.
+
+## 7. Explore the Registry
+
+```bash
+# Search for resources
+relava search notify
+
+# List installed resources
+relava list
+
+# Get details about a resource
+relava info skill denden
+```
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="CLI Reference" icon="terminal" href="/cli/install">
+    Learn every command and flag available.
+  </Card>
+  <Card title="relava.toml" icon="file-code" href="/configuration/relava-toml">
+    Understand the manifest format and version constraints.
+  </Card>
+  <Card title="Resource Types" icon="cubes" href="/concepts/resources">
+    Learn about skills, agents, commands, and rules.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how CLI, server, and store fit together.
+  </Card>
+</CardGroup>
