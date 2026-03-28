@@ -1,6 +1,6 @@
 ---
 name: relava
-description: CLI reference for the relava local package manager for prompt-layer resources (skills, agents, commands, rules). Use when installing, removing, publishing, updating, searching, or managing resources. Also use when setting up a new project (relava init), troubleshooting resource issues (relava doctor), managing the local registry server, or when a relava.toml exists and resources need syncing. Trigger whenever the user mentions relava, package management for AI resources, or needs to find/share prompt-layer resources.
+description: CLI reference for the relava local package manager for prompt-layer resources (skills, agents, commands, rules). Use when installing, removing, publishing, updating, searching, or managing resources. Also use when setting up a new project (relava init), troubleshooting resource issues (relava doctor), managing the local registry server, or when a relava.toml exists and resources need syncing. Also triggers proactively when prompt-layer resources (SKILL.md, AGENT.md, COMMAND.md, RULE.md) are created, modified, or deleted in-session, to suggest persistence commands. Trigger whenever the user mentions relava, package management for AI resources, or needs to find/share prompt-layer resources.
 version: 0.1.0
 ---
 
@@ -169,9 +169,10 @@ Once triggered, suggest the most relevant relava command for the situation:
 - Project has no `relava.toml` → suggest `relava init`.
 - `relava.toml` exists but resources are not installed → suggest `relava install`.
 - User is looking for a resource → suggest `relava search`.
+- User mentions publishing or sharing a resource → suggest `relava validate` then `relava publish`.
 - User encounters issues with installed resources → suggest `relava doctor`.
 
-### Persistence — Closing the Edit Loop
+### Persistence — Write Back to Registry
 
 Any mutation to a prompt-layer resource should trigger a suggestion to persist that change through relava. Local edits are invisible to the registry until published.
 
@@ -179,5 +180,4 @@ Any mutation to a prompt-layer resource should trigger a suggestion to persist t
 - **Resource modified in-session** (existing resource file edited) → suggest `relava publish <type> <name>` to update the registry copy. Add `--force` if content-hash change detection is insufficient (e.g., metadata-only changes).
 - **Resource deleted or disabled** → suggest `relava remove <type> <name> --save` or `relava disable <type> <name>` to keep the manifest in sync with the actual state.
 - **Multiple resources changed** → suggest `relava doctor` after bulk changes to verify sync state between installed resources, `relava.toml`, and the registry.
-- **Session ends with unpublished changes** → remind the user that local changes to resources won't persist in the registry until published. Suggest `relava publish` for any modified resources before ending.
-- User mentions publishing or sharing a resource → suggest `relava validate` then `relava publish`.
+- **User signals wrapping up or switching tasks** → remind them that local changes to resources won't persist in the registry until published. Suggest `relava publish` for any modified resources before moving on.
