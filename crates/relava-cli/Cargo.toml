@@ -21,11 +21,11 @@ dirs.workspace = true
 flate2.workspace = true
 relava-types.workspace = true
 reqwest.workspace = true
-tar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
+tar.workspace = true
 urlencoding = "2"
 
 [dev-dependencies]
