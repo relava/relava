@@ -4,7 +4,10 @@ description = "Cloud and enterprise extensions for the Relava server"
 version.workspace = true
 edition.workspace = true
 license = "Elastic-2.0"
+repository = "https://github.com/relava/relava"
+homepage = "https://github.com/relava/relava"
+documentation = "https://docs.rs/relava-server-ext"
 
 [dependencies]
-relava-server = { path = "../relava-server" }
-relava-types = { path = "../relava-types" }
+relava-server = { version = "0.1.0", path = "../relava-server" }
+relava-types = { version = "0.1.0", path = "../relava-types" }

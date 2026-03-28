@@ -4,6 +4,9 @@ description = "CLI binary for Relava — a local package manager for Claude Code
 version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
+repository = "https://github.com/relava/relava"
+homepage = "https://github.com/relava/relava"
+documentation = "https://docs.rs/relava-cli"
 
 [[bin]]
 name = "relava"
@@ -16,7 +19,7 @@ colored.workspace = true
 comfy-table.workspace = true
 dirs.workspace = true
 flate2 = "1"
-relava-types = { path = "../relava-types" }
+relava-types = { version = "0.1.0", path = "../relava-types" }
 reqwest.workspace = true
 tar = "0.4"
 serde.workspace = true
