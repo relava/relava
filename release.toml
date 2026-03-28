@@ -1,0 +1,23 @@
+# cargo-release configuration
+# https://github.com/crate-ci/cargo-release
+
+# All workspace crates share the same version
+shared-version = "major"
+
+# Publish to crates.io
+publish = true
+
+# Push commits and tags to the remote
+push = true
+
+# Create a git tag for the release
+tag = true
+
+# Use a single commit for all crate version bumps
+consolidate-commits = true
+
+# Automatically bump dependents when a dependency version changes
+dependent-version = "upgrade"
+
+# Tag format: "v0.1.0" instead of per-crate tags
+tag-name = "v{{version}}"
