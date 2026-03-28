@@ -1583,6 +1583,18 @@ No week assignments — each feature is an independent work item.
 
 ---
 
+### Phase 5: Reliability and Scalability
+
+No week assignments — each item is an independent work item.
+
+- ⬜ 60. Atomic bulk install — currently `bulk_install::run()` iterates resources sequentially and delegates each to `install::run()`, which calls `write_to_project()` using individual `std::fs::write()` calls. Failures are collected in `BulkInstallResult.failed` but previously installed resources are not rolled back. **Change:** add a staging phase that downloads and validates all resources into a temp directory first, then atomically moves them into `.claude/` via `std::fs::rename()`. On staging failure, no project files are modified. On move failure, write a rollback log (`relava.lock.rollback`) that `relava doctor --fix` can use to clean up partial state. — *depends on 9, 21*
+- ⬜ 61. Connection pool for SqliteResourceStore — currently `AppState.store` is `Mutex<SqliteResourceStore>` wrapping a single `Connection` opened in `SqliteResourceStore::open()`. All route handlers acquire this lock (e.g., `state.store.lock()` in `lib.rs`), serializing every database operation. **Change:** replace the single `Mutex<SqliteResourceStore>` with a connection pool (e.g., `r2d2` or `deadpool-sqlite`). The `ResourceStore` trait (8 methods in `store/traits.rs`) stays unchanged; only `AppState` and `SqliteResourceStore` internals change. Read operations proceed concurrently under SQLite WAL mode; only writes need serialization. — *depends on 25*
+- ⬜ 62. Automatic cache eviction — `cache_manage::evict()` and `EvictionOpts` struct already exist with LRU logic (sort by mtime, remove oldest until under `max_bytes`), and `DEFAULT_MAX_CACHE_BYTES` is set to 500 MB. However, `install::run()` and `update::run()` never call `evict()` after downloading to cache. **Change:** call `cache_manage::evict()` at the end of `install::run()` and `update::run()` when the cache exceeds the threshold. Expose the threshold via `~/.relava/config.toml` (`cache_max_bytes`). Report eviction counts in `--verbose` mode. — *depends on 9, 59*
+- ⬜ 63. Atomic lockfile updates — `Lockfile::save()` uses `std::fs::write()` directly to write `relava.lock`, which is not atomic on all filesystems. The four callers (`update_after_install`, `update_after_remove`, `update_after_update`, `update_after_bulk_install`) in `lockfile.rs` all go through `save()`. **Change:** write to a temporary file (`relava.lock.tmp`) in the same directory first, then `std::fs::rename()` to `relava.lock` (atomic on POSIX). Add a `relava doctor` check that compares `relava.lock` entries against actual files in `.claude/` and reports drift with an option to reconcile (`--fix`). — *depends on 13, 20*
+- ⬜ 64. Enforce minimum Rust version — the workspace sets `edition = "2024"` (stabilized in Rust 1.85) but declares no `rust-version`. CI (`ci.yml`) uses `dtolnay/rust-toolchain@stable` without pinning. **Change:** add `rust-version = "1.85"` to `[workspace.package]` in root `Cargo.toml`. Pin CI to `1.85` or a specific stable version. Add an MSRV check job in `ci.yml` that builds with the declared minimum version.
+
+---
+
 ## Appendix A: Claude Code Resource Locations Reference
 
 | Resource | Location | Discovery |
