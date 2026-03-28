@@ -1,0 +1,12 @@
+# cargo-release configuration
+# https://github.com/crate-ci/cargo-release
+
+# All workspace crates share the same version
+shared-version = "major"
+consolidate-commits = true
+dependent-version = "upgrade"
+
+publish = true
+push = true
+tag = true
+tag-name = "v{{version}}"
