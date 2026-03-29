@@ -15,7 +15,7 @@ Relava is built in two layers:
 1. **Layer 1: Resource Management** — a local package manager and registry for Claude Code resources. Install, publish, version, and resolve dependencies. Think `npm` or `brew`, but for Claude Code extensions.
 2. **Layer 2: Runtime Scoring** — hooks observe Claude Code's execution and score each skill and agent against their declared contracts. Scores feed into version comparison and score-driven auto-update.
 
-Relava runs **entirely on the developer's machine**. There is no cloud dependency. The local daemon is the single source of truth for published resources and scoring data.
+Relava runs **entirely on the developer's machine**. There is no cloud dependency. The local server is the single source of truth for published resources and scoring data.
 
 ### Why It Exists
 
@@ -53,7 +53,7 @@ Relava solves this by providing:
 |                   Developer Machine                   |
 |                                                       |
 |  +-------------+     +----------------------------+   |
-|  |  relava CLI  |---->|   Relava Daemon             |   |
+|  |  relava CLI  |---->|   Relava Server              |   |
 |  +-------------+     |                            |   |
 |        |              |  REST API (:7420)          |   |
 |        |              |  Resource Store             |   |
@@ -64,7 +64,7 @@ Relava solves this by providing:
 |                              ^                        |
 |  +---------------------------------------------------+|
 |  |              Project Filesystem                    ||
-|  |  (managed by CLI, not by daemon)                   ||
+|  |  (managed by CLI, not by server)                    ||
 |  |                                                    ||
 |  |  .claude/                                          ||
 |  |    skills/        <-- skill directories            ||
@@ -74,52 +74,52 @@ Relava solves this by providing:
 |  |  relava.toml       <-- project resource declarations ||
 |  +---------------------------------------------------+|
 |                                                       |
-|  Claude Code hooks ----HTTP POST----> Daemon (:7420)  |
+|  Claude Code hooks ----HTTP POST----> Server (:7420)  |
 |    (SubagentStart, PreToolUse, etc.)                  |
 |                                                       |
 |  +---------------------------------------------------+|
-|  |         ~/.relava/  (Daemon State)                 ||
+|  |         ~/.relava/  (Server State)                  ||
 |  |                                                    ||
 |  |  store/            <-- published resource files    ||
 |  |  db.sqlite         <-- resource + scoring metadata ||
-|  |  config.toml       <-- daemon configuration        ||
+|  |  config.toml       <-- server configuration        ||
 |  |  cache/            <-- download cache              ||
 |  |  scores/           <-- RunRecords per resource     ||
 |  |  trajectories/     <-- raw hook event logs         ||
 |  |  manifests/        <-- deduplicated snapshots      ||
-|  |  daemon.state      <-- session + crash recovery    ||
+|  |  server.state      <-- session + crash recovery    ||
 |  +---------------------------------------------------+|
 +------------------------------------------------------+
 ```
 
-### Daemon Architecture
+### Server Architecture
 
-Relava runs as a **local daemon process**, not as an on-demand process spawned per hook event.
+Relava uses `relava server --daemon` to run the server as a **background process**, rather than spawning an on-demand process per hook event. There is no separate daemon binary — the existing `relava server` command supports a `--daemon` flag for background execution.
 
 **Lifecycle:**
-- `relava daemon start` — starts the daemon (background process)
-- `relava daemon stop` — stops the daemon
-- `relava init` starts the daemon automatically as part of project setup
+- `relava server start --daemon` — starts the server as a background process
+- `relava server stop` — stops the server
+- `relava init` starts the server automatically as part of project setup
 
-**The daemon IS the local server.** It hosts:
+**The server hosts:**
 1. **REST API endpoints** for CLI commands (`relava info`, `relava scores`, `relava compare`, etc.)
 2. **Hook event endpoints** that Claude Code hooks POST events to
 
-**Why a daemon, not per-event process spawning:**
-- **State continuity** — the daemon maintains the call stack in memory across hook events within a session. Per-event spawning would require serializing/deserializing call stack state to disk on every hook event.
-- **No process spawn overhead** — hook events fire frequently (every tool use). Spawning a process per event adds latency. The daemon receives HTTP POSTs with near-zero overhead.
-- **Batch trajectory writes** — the daemon buffers trajectory events in memory and flushes to disk periodically, rather than opening/writing/closing the file on every event.
-- **Consistent with hook handler type** — hooks use the HTTP handler type (not command type), POSTing events to the daemon's HTTP endpoints.
+**Why a long-running server, not per-event process spawning:**
+- **State continuity** — the server maintains the call stack in memory across hook events within a session. Per-event spawning would require serializing/deserializing call stack state to disk on every hook event.
+- **No process spawn overhead** — hook events fire frequently (every tool use). Spawning a process per event adds latency. The server receives HTTP POSTs with near-zero overhead.
+- **Batch trajectory writes** — the server buffers trajectory events in memory and flushes to disk periodically, rather than opening/writing/closing the file on every event.
+- **Consistent with hook handler type** — hooks use the HTTP handler type (not command type), POSTing events to the server's HTTP endpoints.
 
-The daemon listens on `localhost:7420` by default. It is the same process that serves the registry REST API — one daemon, one port, serving both hook events and CLI queries.
+The server listens on `localhost:7420` by default. One process, one port, serving both hook events and CLI queries.
 
 ### Component Interactions
 
-1. **Daemon** is both the registry server and the hook event processor. It stores published resources, serves them via REST API, receives hook events from Claude Code, and runs the scoring engine.
-2. **CLI** reads the project's `relava.toml`, requests resources from the daemon, and writes files to the project filesystem. The CLI manages all project-level operations.
-3. **GUI** is a web application served by the daemon for browsing and searching the registry.
-4. **Project Filesystem** is managed entirely by the CLI — the daemon never touches it.
-5. **Claude Code Hooks** POST events to the daemon's HTTP endpoints during agent execution. The daemon processes these events to build call trees, track trajectories, and compute scores.
+1. **Server** is both the registry and the hook event processor. It stores published resources, serves them via REST API, receives hook events from Claude Code, and runs the scoring engine. Runs as a background process via `relava server --daemon`.
+2. **CLI** reads the project's `relava.toml`, requests resources from the server, and writes files to the project filesystem. The CLI manages all project-level operations.
+3. **GUI** is a web application served by the server for browsing and searching the registry.
+4. **Project Filesystem** is managed entirely by the CLI — the server never touches it.
+5. **Claude Code Hooks** POST events to the server's HTTP endpoints during agent execution. The server processes these events to build call trees, track trajectories, and compute scores.
 
 ### Crate Structure
 
@@ -135,7 +135,7 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
     |                                  hooks, scoring engine, trajectory storage,
     |                                  compare, scores, auto-update, frontmatter inference
     |
-    +--- relava-server  (ELv2)         Daemon server, REST API, storage layer,
+    +--- relava-server  (ELv2)         Server, REST API, storage layer,
              ^                         SQLite DB, blob store, web GUI,
              |                         hook event endpoints, score storage/querying
              |
@@ -146,7 +146,7 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
 | Crate | Contains | License |
 |-------|----------|---------|
 | `relava-types` | `manifest`, `validate`, `version`, `file_filter`, `run_record`, `violation`, `relava_event`, `implication_record` modules | Apache-2.0 |
-| `relava-cli` | `install`, `remove`, `update`, `list`, `info`, `search`, `publish`, `import`, `validate`, `init`, `doctor`, `disable`, `enable`, `resolve`, `cache_manage`, `self_update`, `update_check`, `bulk_install`, `lockfile`, `save`, `registry`, `cache`, `api_client`, `env_check`, `tools`, `output`, `server`, `hooks`, `scoring`, `compare`, `scores`, `auto_update`, `frontmatter`, `daemon` | Apache-2.0 |
+| `relava-cli` | `install`, `remove`, `update`, `list`, `info`, `search`, `publish`, `import`, `validate`, `init`, `doctor`, `disable`, `enable`, `resolve`, `cache_manage`, `self_update`, `update_check`, `bulk_install`, `lockfile`, `save`, `registry`, `cache`, `api_client`, `env_check`, `tools`, `output`, `server`, `hooks`, `scoring`, `compare`, `scores`, `auto_update`, `frontmatter` | Apache-2.0 |
 | `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, dependency resolver, GUI serving, hook event handlers, score storage, trajectory storage | ELv2 |
 | `relava-server-ext` | Stub — future cloud/enterprise extensions | ELv2 |
 
@@ -154,7 +154,7 @@ The split licensing keeps shared types and the CLI open source (Apache-2.0) whil
 
 ### REST-First Architecture
 
-All CLI operations go through the daemon's REST API — there is no direct mode. If the daemon is not running, the CLI prints an error: `Daemon not reachable. Run 'relava daemon start' first.`
+All CLI operations go through the server's REST API — there is no direct mode. If the server is not running, the CLI prints an error: `Server not reachable. Run 'relava server start --daemon' first.`
 
 This design choice is deliberate:
 
@@ -388,17 +388,17 @@ This file is:
 
 ---
 
-## 4. Local Daemon Design
+## 4. Local Server Design
 
-The Relava daemon is a local registry and scoring engine. It stores published resources, serves the GUI, receives hook events from Claude Code, and computes compliance scores. It is the single source that `relava install` pulls from, `relava publish` pushes to, and Claude Code hooks POST events to.
+The Relava server is a local registry and scoring engine. It stores published resources, serves the GUI, receives hook events from Claude Code, and computes compliance scores. It is the single source that `relava install` pulls from, `relava publish` pushes to, and Claude Code hooks POST events to. The server runs as a background process via `relava server --daemon`.
 
 ### Storage
 
 ```
 ~/.relava/
-  config.toml          # Daemon config (port, defaults, scoring settings)
+  config.toml          # Server config (port, defaults, scoring settings)
   db.sqlite            # Resource metadata + scoring data
-  daemon.state         # Current session ID, last event timestamp (crash recovery)
+  server.state         # Current session ID, last event timestamp (crash recovery)
   store/               # Published resource files (stored as-is, no archives)
     skills/
       denden/
@@ -433,7 +433,7 @@ The Relava daemon is a local registry and scoring engine. It stores published re
       code-review/
         1.2.0.json     # Auto-inferred purpose, tools, constraints
   cache/               # Temporary cache
-  logs/                # Daemon logs
+  logs/                # Server logs
 ```
 
 ### Database Schema (SQLite)
@@ -467,7 +467,7 @@ CREATE TABLE versions (
 
 ```
 
-The daemon does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
+The server does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
 
 ### Layer 2 Database Tables (Scoring)
 
@@ -798,7 +798,7 @@ Base URL: `http://localhost:7420/api/v1`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/hooks/event` | Receive a hook event from Claude Code (RelavaEvent). Processed asynchronously — daemon returns 200 immediately. |
+| `POST` | `/hooks/event` | Receive a hook event from Claude Code (RelavaEvent). Processed asynchronously — server returns 200 immediately. |
 
 #### Scoring (Layer 2)
 
@@ -848,15 +848,15 @@ Initialize current directory as a Relava-managed project. Sets up resource manag
 $ cd ~/projects/my-app
 $ relava init
 Created relava.toml
-Starting daemon... ok (http://localhost:7420)
+Starting server... ok (http://localhost:7420)
 Installing hooks... ok (6 hooks in .claude/settings.json)
 Ready. Your next Claude Code session will be scored by Relava.
 ```
 
 What it does:
 - Creates an empty `relava.toml` in project root
-- Starts the daemon if not already running (`relava daemon start`)
-- Installs Claude Code hooks (`relava hooks install`) — configures `SubagentStart`, `SubagentStop`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` hooks to POST to daemon
+- Starts the server if not already running (`relava server start --daemon`)
+- Installs Claude Code hooks (`relava hooks install`) — configures `SubagentStart`, `SubagentStop`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` hooks to POST to server
 
 #### `relava install <resource-type> <resource-name> [options]`
 
@@ -1053,29 +1053,27 @@ Both client-side (CLI) and server-side validation are enforced:
 | Dependency existence (all deps must exist in registry) | No | Yes |
 | SHA-256 per file | Yes | Yes |
 
-#### `relava daemon start [--port PORT]`
+#### `relava server start [--port PORT] [--daemon]`
 
-Start the Relava daemon (background process). The daemon serves both the registry REST API and hook event endpoints.
+Start the Relava server. With `--daemon`, the server runs as a background process. The server serves both the registry REST API and hook event endpoints.
 
 ```bash
-$ relava daemon start
-Relava daemon started on http://localhost:7420
+$ relava server start --daemon
+Relava server started on http://localhost:7420
 GUI available at http://localhost:7420
 
-$ relava daemon stop
-Relava daemon stopped.
+$ relava server stop
+Relava server stopped.
 
-$ relava daemon status
-Relava daemon is running on http://localhost:7420
+$ relava server status
+Relava server is running on http://localhost:7420
   Resources: 12 published, 6 installed in current project
   Active sessions: 1
 ```
 
-**Note:** `relava server start/stop/status` are retained as aliases for backward compatibility.
-
 #### `relava hooks install`
 
-Configure Claude Code hooks to POST events to the Relava daemon. Writes hook entries to `.claude/settings.json`.
+Configure Claude Code hooks to POST events to the Relava server. Writes hook entries to `.claude/settings.json`.
 
 ```bash
 $ relava hooks install
@@ -1196,13 +1194,13 @@ $ relava frontmatter edit skill code-review
 # Opens editor with inferred frontmatter for manual adjustment
 ```
 
-#### `relava server start [--port PORT] [--daemon]`
+#### `relava server start` (foreground mode)
 
-Retained as alias for `relava daemon start` for backward compatibility.
+When run without `--daemon`, the server runs in the foreground. Useful for development and debugging.
 
 ```bash
-$ relava server start --daemon
-Relava server started on http://localhost:7420
+$ relava server start
+Relava server started on http://localhost:7420 (foreground)
 GUI available at http://localhost:7420
 
 $ relava server stop
@@ -1670,7 +1668,7 @@ Each resource in a session is scored independently. When an orchestrator delegat
 
 ### 10.1 Frontmatter Inference
 
-Users should never need to write frontmatter manually. On the first hook event that observes a resource without inferred frontmatter, Relava queues it for LLM-based inference. After the session completes, the daemon auto-generates:
+Users should never need to write frontmatter manually. On the first hook event that observes a resource without inferred frontmatter, Relava queues it for LLM-based inference. After the session completes, the server auto-generates:
 
 - **Purpose statement** — what the resource is designed to do
 - **Expected tools** — which tools the resource should use
@@ -1678,7 +1676,7 @@ Users should never need to write frontmatter manually. On the first hook event t
 
 **Timing:** Inference runs on first hook observation only. Install and publish work fully offline — no LLM required. Resources without inferred frontmatter produce N/A compliance scores (not 0.0) until inference completes.
 
-**How inference is triggered:** The daemon detects a resource without inferred frontmatter during hook processing. It queues the resource for inference. After the session completes (on `Stop` event), the daemon calls the LLM API directly using the user's configured API key (`RELAVA_API_KEY` env var or `api_key` in `~/.relava/config.toml`) to generate frontmatter from the resource content. No injection into the active Claude session occurs; the daemon makes its own API calls post-session.
+**How inference is triggered:** The server detects a resource without inferred frontmatter during hook processing. It queues the resource for inference. After the session completes (on `Stop` event), the server calls the LLM API directly using the user's configured API key (`RELAVA_API_KEY` env var or `api_key` in `~/.relava/config.toml`) to generate frontmatter from the resource content. No injection into the active Claude session occurs; the server makes its own API calls post-session.
 
 **Re-inference:** When a resource's content changes (new version installed, content hash changes on local edit), frontmatter is re-inferred on the next hook event.
 
@@ -1785,7 +1783,7 @@ One trajectory file per session (not per resource). All resources in the session
 
 Hooks observe Claude Code's execution. They do not replace it.
 
-**Hook handler type:** All hooks use the **HTTP handler type** (not command type). Each hook event is POSTed to the Relava daemon's HTTP endpoint.
+**Hook handler type:** All hooks use the **HTTP handler type** (not command type). Each hook event is POSTed to the Relava server's HTTP endpoint.
 
 **Async execution:** All observation hooks use **`async: true`** configuration. Hooks observe but never block Claude Code execution. Claude Code does not wait for Relava's response before continuing.
 
@@ -1802,7 +1800,7 @@ Hooks observe Claude Code's execution. They do not replace it.
 
 **Processing flow:**
 
-1. On session start (first hook event received), daemon initializes call stack and trajectory log
+1. On session start (first hook event received), server initializes call stack and trajectory log
 2. On `SubagentStart`: push agent onto stack, load its frontmatter, begin tracking its actions
 3. On each `PreToolUse`: append to trajectory with current stack. Check tool against current stack-top resource's declared tools
 4. On each `PostToolUse`: append to trajectory. Record successful tool completion
@@ -1926,10 +1924,10 @@ When a newer version of a resource is available in the registry and has better s
 
 | Week | Deliverable |
 |------|-------------|
-| 1 | Hook infrastructure — `relava hooks install` configures Claude Code hooks (HTTP handler type, async:true). Daemon architecture (`relava daemon start/stop`). Call stack tracking via `SubagentStart`/`SubagentStop` events. `PreToolUse`/`PostToolUse`/`PostToolUseFailure` events normalized to RelavaEvent and written to `~/.relava/trajectories/`. Claude Code adapter (RelavaEvent normalization). Frontmatter loading for declared tools/skills/agents/constraints. |
+| 1 | Hook infrastructure — `relava hooks install` configures Claude Code hooks (HTTP handler type, async:true). Server daemon mode (`relava server start --daemon`). Call stack tracking via `SubagentStart`/`SubagentStop` events. `PreToolUse`/`PostToolUse`/`PostToolUseFailure` events normalized to RelavaEvent and written to `~/.relava/trajectories/`. Claude Code adapter (RelavaEvent normalization). Frontmatter loading for declared tools/skills/agents/constraints. |
 | 2 | Deterministic scoring engine — tool compliance, skill compliance (agents), delegation compliance (agents), error recovery rate. `RunRecord` schema with `session_id`, `parent_id`, `call_depth`. One `RunRecord` per resource per session. Local storage for scores and trajectories. |
 | 3 | Score CLI + auto-update — `relava info <type> <name> --scores` (score history per version), `relava scores` (aggregate across project), `relava compare <type> <name> <v1> <v2>` (content diff + score comparison). `relava auto-update` (score-driven version selection with `--dry-run` and `--status`). Local change tracking by content hash. Score migration on `relava publish`. Inferred frontmatter embedded on publish. |
-| 4 | LLM infrastructure — frontmatter inference engine (auto-generation of purpose, expected tools, constraints from resource content, triggered post-session via daemon's own API calls) + LLM evaluation (opt-in) — purpose alignment, instruction alignment, delegation quality scorers. Post-session async evaluation. `[scoring] llm_eval = true` config. LLM scores stored separately with lower confidence weight. |
+| 4 | LLM infrastructure — frontmatter inference engine (auto-generation of purpose, expected tools, constraints from resource content, triggered post-session via server's own API calls) + LLM evaluation (opt-in) — purpose alignment, instruction alignment, delegation quality scorers. Post-session async evaluation. `[scoring] llm_eval = true` config. LLM scores stored separately with lower confidence weight. |
 
 **Milestone:** User installs a skill or agent, Relava auto-infers its frontmatter contract on first use, hooks produce compliance scores on every run, resources auto-update to better-scoring versions, and the scoring data is accurate enough to feed failure clustering.
 
@@ -2157,16 +2155,16 @@ No week assignments — each feature is an independent work item.
 
 #### Week B1 — Hook Infrastructure & Call Tree
 
-- ⬜ 65. Daemon lifecycle — `relava daemon start/stop/status` commands, background process management with PID file, alias `relava server` commands for backward compatibility — *depends on 26*
+- ⬜ 65. Server daemon mode — extend `relava server start --daemon` with hook event endpoints and scoring engine integration, background process management with PID file — *depends on 26*
 - ⬜ 66. Hook installation — `relava hooks install` writes hook entries to `.claude/settings.json` (SubagentStart, SubagentStop, PreToolUse, PostToolUse, PostToolUseFailure, Stop), all using HTTP handler type with `async: true`, POST to `localhost:7420/api/v1/hooks/event`
 - ⬜ 67. Hook removal — `relava hooks remove` removes Relava hook entries from `.claude/settings.json`
 - ⬜ 68. Hook event endpoint — `POST /api/v1/hooks/event` receives raw Claude Code hook events, returns 200 immediately (async processing)
 - ⬜ 69. RelavaEvent schema — canonical event types (`SUBAGENT_START`, `SUBAGENT_STOP`, `PRE_TOOL_USE`, `POST_TOOL_USE`, `POST_TOOL_USE_FAILURE`, `SESSION_STOP`) in `relava-types` crate
 - ⬜ 70. Claude Code adapter — normalize Claude Code hook payloads into RelavaEvent. All platform knowledge encapsulated here — no downstream system references Claude-specific types
-- ⬜ 71. Call stack tracking — in-memory call stack maintained by daemon. Push on `SUBAGENT_START`, pop on `SUBAGENT_STOP`. Every event between start/stop attributed to stack-top agent
+- ⬜ 71. Call stack tracking — in-memory call stack maintained by server. Push on `SUBAGENT_START`, pop on `SUBAGENT_STOP`. Every event between start/stop attributed to stack-top agent
 - ⬜ 72. Trajectory writer — write RelavaEvent stream to `~/.relava/trajectories/<session_id>.jsonl`, one JSON line per event with call stack annotation
 - ⬜ 73. Frontmatter loading — on `SUBAGENT_START`, load agent's frontmatter from installed resources. Resolve declared tools/skills/agents/constraints for compliance checking
-- ⬜ 74. `relava init` expansion — add daemon start and hooks install to `relava init` flow. Print scoring-ready confirmation message — *depends on 65, 66*
+- ⬜ 74. `relava init` expansion — add server start and hooks install to `relava init` flow. Print scoring-ready confirmation message — *depends on 65, 66*
 
 #### Week B2 — Deterministic Scoring Engine
 
@@ -2178,11 +2176,11 @@ No week assignments — each feature is an independent work item.
 - ⬜ 80. Error recovery scorer — on `POST_TOOL_USE_FAILURE`, check if next action by same resource addresses the error. Recovery = corrective action follows. Failure = same failing action repeated or session abandoned. Score = (recoveries) / (total errors)
 - ⬜ 81. RunRecord finalization — on `SUBAGENT_STOP` or `SESSION_STOP`, compute deterministic scores for each resource from attributed trajectory events, write RunRecord to `~/.relava/scores/` and SQLite
 - ⬜ 82. Manifest snapshot — on session start, capture installed resource versions as `~/.relava/manifests/<content_hash>.json`. Deduplicated across consecutive runs with identical versions. Store `manifest_hash` in RunRecord
-- ⬜ 83. Daemon crash recovery — write `daemon.state` (session_id, last event timestamp) to disk periodically. On restart, detect incomplete sessions and mark RunRecords with `data_complete = false`
+- ⬜ 83. Server crash recovery — write `server.state` (session_id, last event timestamp) to disk periodically. On restart, detect incomplete sessions and mark RunRecords with `data_complete = false`
 
 #### Week B3 — Score CLI & Auto-Update
 
-- ⬜ 84. `relava scores` CLI — aggregate scores across all resources in project. Query daemon API, display formatted table with resource, version, run count, and score columns — *depends on 75*
+- ⬜ 84. `relava scores` CLI — aggregate scores across all resources in project. Query server API, display formatted table with resource, version, run count, and score columns — *depends on 75*
 - ⬜ 85. `relava info --scores` — extend existing `relava info` to show score history per version when `--scores` flag is set. Show recent violations — *depends on 75, 76*
 - ⬜ 86. `relava compare` CLI — `relava compare <type> <name> <v1> <v2>`. Content diff (SKILL.md / agent .md diff between versions) + score comparison. For skills: per-agent stratified score correlations (auto-discover dependent agents from RunRecords). For agents: own scores + confounder detection (warn if dependencies also changed versions). Minimum data thresholds (5+ runs to show, 20+ recommended) — *depends on 75, 82*
 - ⬜ 87. `relava auto-update` CLI — check all installed resources for better-scoring versions in registry. `--dry-run` shows what would change. `--status` shows available updates with score deltas. Respects `[auto_update]` config in `relava.toml` (enabled, min_runs, require_no_regression). Updates `relava.lock` — *depends on 75, 18*
@@ -2191,7 +2189,7 @@ No week assignments — each feature is an independent work item.
 
 #### Week B4 — LLM Infrastructure
 
-- ⬜ 90. Frontmatter inference engine — on first hook observation of a resource without frontmatter, queue for inference. After session completes (`SESSION_STOP`), daemon calls LLM API (using `RELAVA_API_KEY` or `~/.relava/config.toml` api_key) to generate purpose, expected tools, and constraints from resource content. Store in `~/.relava/frontmatter/` and `inferred_frontmatter` table. Conservative by default (minimum tool set). Re-infer on content hash change — *depends on 68, 73*
+- ⬜ 90. Frontmatter inference engine — on first hook observation of a resource without frontmatter, queue for inference. After session completes (`SESSION_STOP`), server calls LLM API (using `RELAVA_API_KEY` or `~/.relava/config.toml` api_key) to generate purpose, expected tools, and constraints from resource content. Store in `~/.relava/frontmatter/` and `inferred_frontmatter` table. Conservative by default (minimum tool set). Re-infer on content hash change — *depends on 68, 73*
 - ⬜ 91. `relava frontmatter show|edit` CLI — view inferred frontmatter for a resource. `edit` opens editor for manual adjustment. Explicit frontmatter in resource file takes precedence over inferred
 - ⬜ 92. LLM evaluation engine (opt-in) — purpose alignment, instruction alignment, delegation quality scorers. Enabled by `[scoring] llm_eval = true` in `relava.toml`. Runs post-session. Sends resource frontmatter + trajectory segment to LLM with structured prompt, expects JSON response with scores and reasons. LLM scores stored separately with lower confidence weight
 - ⬜ 93. ImplicationRecord analysis — when agent scores drop and LLM eval is enabled, LLM judge receives agent definition + active skill definitions + trajectory. Produces ImplicationRecords linking failure to specific skills/agents. Schema: implication_type, severity, category, summary, confidence. Stored in `implication_records` table — *depends on 92, 76*
