@@ -1,6 +1,6 @@
 # Relava — Plan
 
-> A local registry and package manager for Claude Code prompt-layer artifacts.
+> The reliability layer for Claude Code — score, compare, and safely improve skills and agents.
 
 ---
 
@@ -8,29 +8,41 @@
 
 ### What Relava Is
 
-Relava is a **local package manager and registry** for Claude Code resources. It manages the prompt-layer artifacts that shape how Claude thinks and behaves: skills, agents, commands, rules, and hooks. Think `npm` or `brew`, but for Claude Code extensions.
+Relava is the **reliability layer for Claude Code**. It manages the prompt-layer artifacts that shape how Claude thinks and behaves (skills, agents, commands, rules, hooks), then observes how they perform via hooks and scores each resource on compliance and error recovery.
 
-Relava runs **entirely on the developer's machine**. There is no cloud dependency. The local registry server is the single source of truth for published resources.
+Relava is built in two layers:
+
+1. **Layer 1: Resource Management** — a local package manager and registry for Claude Code resources. Install, publish, version, and resolve dependencies. Think `npm` or `brew`, but for Claude Code extensions.
+2. **Layer 2: Runtime Scoring** — hooks observe Claude Code's execution and score each skill and agent against their declared contracts. Scores feed into version comparison and score-driven auto-update.
+
+Relava runs **entirely on the developer's machine**. There is no cloud dependency. The local daemon is the single source of truth for published resources and scoring data.
 
 ### Why It Exists
 
-Claude Code's extension model is file-based — skills are directories, agents are `.md` files, commands are `.md` files, rules are `.md` files, hooks are JSON in `settings.json`. There is no built-in package manager, no versioning, no dependency tracking, no discovery mechanism. Developers manually copy files between projects.
+Claude Code's extension model is file-based — skills are directories, agents are `.md` files, commands are `.md` files, rules are `.md` files, hooks are JSON in `settings.json`. There is no built-in package manager, no versioning, no dependency tracking, no discovery mechanism. Developers manually copy files between projects. And there is no way to know whether a skill or agent is performing well or regressing.
 
 Relava solves this by providing:
 
 - **Individual resource management** — each skill, agent, command, and rule is versioned and managed independently
 - **Version management** so resources can be updated, rolled back, and pinned
+- **Runtime scoring** — hooks observe execution and score compliance against declared contracts
+- **Version comparison** — see how scores changed between resource versions
+- **Score-driven auto-update** — automatically update to better-scoring versions
 - **A local registry** with GUI for browsing, searching, and managing resources
 - **A CLI** that reads a project's `relava.toml` and fetches resources from the registry
 - **A declarative manifest** (`relava.toml`) for reproducible project setups
 
 ### Design Principles
 
-1. **Local-first.** Everything works offline. No account required.
-2. **Prompt-layer only.** Relava manages text/files that get injected into Claude's context. It does NOT manage infrastructure (MCP servers, runtimes, databases).
-3. **Non-invasive.** Relava writes files to standard Claude Code locations. If you remove Relava, your installed resources still work — they're just files.
-4. **Multi-file aware.** Skills can contain templates and support files. Relava handles the full complexity.
-5. **Individual resources.** No bundling or archive step. Each resource is published and installed independently, with its directory contents uploaded as-is.
+1. **Local-first.** Everything works offline. No account required. SQLite + filesystem.
+2. **Observe, don't replace.** Claude Code already has an execution runtime. Relava observes it via hooks and scores the output. It does not inject itself into the execution loop.
+3. **Deterministic first, LLM second.** Tool compliance, skill compliance, delegation compliance, and error recovery are checkable without an LLM. LLM evaluation (purpose alignment, instruction alignment, delegation quality) is opt-in and costs tokens. Deterministic scores are the baseline; LLM scores are a premium layer.
+4. **Non-invasive.** Resources install to standard locations. Remove Relava and your agents still work. Hooks observe but never block.
+5. **Invisible by default.** The human uses skills and agents normally. Relava handles frontmatter inference, scoring, and improvement in the background. No manual frontmatter authoring, no score dashboards to monitor, no version decisions to make.
+6. **Single target platform.** Claude Code first. Codex and Gemini CLI later as separate `agent_type` targets. No hybrid mixing.
+7. **Prompt-layer only.** Relava manages text/files that get injected into Claude's context. It does NOT manage infrastructure (MCP servers, runtimes, databases).
+8. **Multi-file aware.** Skills can contain templates and support files. Relava handles the full complexity.
+9. **Individual resources.** No bundling or archive step. Each resource is published and installed independently, with its directory contents uploaded as-is.
 
 ---
 
@@ -41,19 +53,18 @@ Relava solves this by providing:
 |                   Developer Machine                   |
 |                                                       |
 |  +-------------+     +----------------------------+   |
-|  |  relava CLI  |---->|   Relava Registry Server   |   |
+|  |  relava CLI  |---->|   Relava Daemon             |   |
 |  +-------------+     |                            |   |
 |        |              |  REST API (:7420)          |   |
 |        |              |  Resource Store             |   |
 |  +-------------+     |  SQLite Metadata DB        |   |
-|  |  Relava GUI  |---->|                            |   |
-|  | (Web App)    |     +----------------------------+   |
-|  +-------------+                                     |
-|        |                                              |
-|        v                                              |
+|  |  Relava GUI  |---->|  Hook Event Endpoints      |   |
+|  | (Web App)    |     |  Scoring Engine             |   |
+|  +-------------+     +----------------------------+   |
+|                              ^                        |
 |  +---------------------------------------------------+|
 |  |              Project Filesystem                    ||
-|  |  (managed by CLI, not by server)                   ||
+|  |  (managed by CLI, not by daemon)                   ||
 |  |                                                    ||
 |  |  .claude/                                          ||
 |  |    skills/        <-- skill directories            ||
@@ -63,37 +74,70 @@ Relava solves this by providing:
 |  |  relava.toml       <-- project resource declarations ||
 |  +---------------------------------------------------+|
 |                                                       |
+|  Claude Code hooks ----HTTP POST----> Daemon (:7420)  |
+|    (SubagentStart, PreToolUse, etc.)                  |
+|                                                       |
 |  +---------------------------------------------------+|
-|  |         ~/.relava/  (Server State)                 ||
+|  |         ~/.relava/  (Daemon State)                 ||
 |  |                                                    ||
 |  |  store/            <-- published resource files    ||
-|  |  db.sqlite         <-- resource metadata           ||
-|  |  config.toml       <-- server configuration        ||
+|  |  db.sqlite         <-- resource + scoring metadata ||
+|  |  config.toml       <-- daemon configuration        ||
 |  |  cache/            <-- download cache              ||
+|  |  scores/           <-- RunRecords per resource     ||
+|  |  trajectories/     <-- raw hook event logs         ||
+|  |  manifests/        <-- deduplicated snapshots      ||
+|  |  daemon.state      <-- session + crash recovery    ||
 |  +---------------------------------------------------+|
 +------------------------------------------------------+
 ```
 
+### Daemon Architecture
+
+Relava runs as a **local daemon process**, not as an on-demand process spawned per hook event.
+
+**Lifecycle:**
+- `relava daemon start` — starts the daemon (background process)
+- `relava daemon stop` — stops the daemon
+- `relava init` starts the daemon automatically as part of project setup
+
+**The daemon IS the local server.** It hosts:
+1. **REST API endpoints** for CLI commands (`relava info`, `relava scores`, `relava compare`, etc.)
+2. **Hook event endpoints** that Claude Code hooks POST events to
+
+**Why a daemon, not per-event process spawning:**
+- **State continuity** — the daemon maintains the call stack in memory across hook events within a session. Per-event spawning would require serializing/deserializing call stack state to disk on every hook event.
+- **No process spawn overhead** — hook events fire frequently (every tool use). Spawning a process per event adds latency. The daemon receives HTTP POSTs with near-zero overhead.
+- **Batch trajectory writes** — the daemon buffers trajectory events in memory and flushes to disk periodically, rather than opening/writing/closing the file on every event.
+- **Consistent with hook handler type** — hooks use the HTTP handler type (not command type), POSTing events to the daemon's HTTP endpoints.
+
+The daemon listens on `localhost:7420` by default. It is the same process that serves the registry REST API — one daemon, one port, serving both hook events and CLI queries.
+
 ### Component Interactions
 
-1. **Registry Server** is a pure resource registry — it stores published resources and serves them via REST API. It does NOT track projects, installations, or manage project files.
-2. **CLI** reads the project's `relava.toml`, requests resources from the server, and writes files to the project filesystem. The CLI manages all project-level operations.
-3. **GUI** is a web application served by the server for browsing and searching the registry.
-4. **Project Filesystem** is managed entirely by the CLI — the server never touches it.
+1. **Daemon** is both the registry server and the hook event processor. It stores published resources, serves them via REST API, receives hook events from Claude Code, and runs the scoring engine.
+2. **CLI** reads the project's `relava.toml`, requests resources from the daemon, and writes files to the project filesystem. The CLI manages all project-level operations.
+3. **GUI** is a web application served by the daemon for browsing and searching the registry.
+4. **Project Filesystem** is managed entirely by the CLI — the daemon never touches it.
+5. **Claude Code Hooks** POST events to the daemon's HTTP endpoints during agent execution. The daemon processes these events to build call trees, track trajectories, and compute scores.
 
 ### Crate Structure
 
 The codebase is a Cargo workspace with four crates, split by concern and license:
 
 ```
-relava-types        (Apache-2.0)   Shared types, validation, versioning, manifest parsing
-    ^                              Zero IO dependencies — pure logic only
+relava-types        (Apache-2.0)   Shared types, validation, versioning, manifest parsing,
+    ^                              RunRecord/Violation/RelavaEvent schemas
+    |                              Zero IO dependencies — pure logic only
     |
     +--- relava-cli     (Apache-2.0)   CLI binary, registry client, caching,
-    |                                  dependency resolution, env checks, tool checks
+    |                                  dependency resolution, env checks, tool checks,
+    |                                  hooks, scoring engine, trajectory storage,
+    |                                  compare, scores, auto-update, frontmatter inference
     |
-    +--- relava-server  (ELv2)         Registry server, REST API, storage layer,
-             ^                         SQLite DB, blob store, web GUI
+    +--- relava-server  (ELv2)         Daemon server, REST API, storage layer,
+             ^                         SQLite DB, blob store, web GUI,
+             |                         hook event endpoints, score storage/querying
              |
          relava-server-ext (ELv2)      Cloud and enterprise extensions (future)
                                        (depends on both relava-server and relava-types)
@@ -101,16 +145,16 @@ relava-types        (Apache-2.0)   Shared types, validation, versioning, manifes
 
 | Crate | Contains | License |
 |-------|----------|---------|
-| `relava-types` | `manifest`, `validate`, `version`, `file_filter` modules | Apache-2.0 |
-| `relava-cli` | `install`, `remove`, `update`, `list`, `info`, `search`, `publish`, `import`, `validate`, `init`, `doctor`, `disable`, `enable`, `resolve`, `cache_manage`, `self_update`, `update_check`, `bulk_install`, `lockfile`, `save`, `registry`, `cache`, `api_client`, `env_check`, `tools`, `output`, `server` | Apache-2.0 |
-| `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, dependency resolver, GUI serving | ELv2 |
+| `relava-types` | `manifest`, `validate`, `version`, `file_filter`, `run_record`, `violation`, `relava_event`, `implication_record` modules | Apache-2.0 |
+| `relava-cli` | `install`, `remove`, `update`, `list`, `info`, `search`, `publish`, `import`, `validate`, `init`, `doctor`, `disable`, `enable`, `resolve`, `cache_manage`, `self_update`, `update_check`, `bulk_install`, `lockfile`, `save`, `registry`, `cache`, `api_client`, `env_check`, `tools`, `output`, `server`, `hooks`, `scoring`, `compare`, `scores`, `auto_update`, `frontmatter`, `daemon` | Apache-2.0 |
+| `relava-server` | `store` (traits, db, blob, models, dirs), HTTP handlers, dependency resolver, GUI serving, hook event handlers, score storage, trajectory storage | ELv2 |
 | `relava-server-ext` | Stub — future cloud/enterprise extensions | ELv2 |
 
 The split licensing keeps shared types and the CLI open source (Apache-2.0) while protecting the server against competing managed services (ELv2).
 
 ### REST-First Architecture
 
-All CLI operations go through the server's REST API — there is no direct mode. If the server is not running, the CLI prints an error: `Server not reachable. Run 'relava server start' first.`
+All CLI operations go through the daemon's REST API — there is no direct mode. If the daemon is not running, the CLI prints an error: `Daemon not reachable. Run 'relava daemon start' first.`
 
 This design choice is deliberate:
 
@@ -314,6 +358,17 @@ commit = "0.2.0"
 
 [rules]
 no-console-log = "1.0.0"
+
+# Scoring configuration (Layer 2)
+[scoring]
+llm_eval = false           # Enable LLM-as-judge evaluation (costs tokens)
+# api_key should be set in ~/.relava/config.toml or RELAVA_API_KEY env var, not here
+
+# Auto-update configuration (Layer 2)
+[auto_update]
+enabled = true             # Auto-update to better-scoring versions
+min_runs = 5               # Minimum runs before trusting a version's scores
+require_no_regression = true # Newer version must not score worse on any metric
 ```
 
 The `agent_type` field tells Relava which platform conventions to follow for install paths, frontmatter parsing, and available resource types. In MVP, only `"claude"` is supported — other values produce a clear error.
@@ -333,16 +388,17 @@ This file is:
 
 ---
 
-## 4. Local Registry Server Design
+## 4. Local Daemon Design
 
-The Relava server is a local registry that stores published resources and serves the GUI. It is the single source that `relava install` pulls from and `relava publish` pushes to.
+The Relava daemon is a local registry and scoring engine. It stores published resources, serves the GUI, receives hook events from Claude Code, and computes compliance scores. It is the single source that `relava install` pulls from, `relava publish` pushes to, and Claude Code hooks POST events to.
 
 ### Storage
 
 ```
 ~/.relava/
-  config.toml          # Server config (port, defaults)
-  db.sqlite            # All metadata
+  config.toml          # Daemon config (port, defaults, scoring settings)
+  db.sqlite            # Resource metadata + scoring data
+  daemon.state         # Current session ID, last event timestamp (crash recovery)
   store/               # Published resource files (stored as-is, no archives)
     skills/
       denden/
@@ -356,8 +412,28 @@ The Relava server is a local registry that stores published resources and serves
       debugger/
         0.5.0/
           debugger.md
+  scores/              # RunRecords per resource per version
+    registry/          # RunRecords for published registry versions
+      skill/
+        code-review/
+          1.2.0/       # One RunRecord JSON file per run
+      agent/
+        orchestrator/
+          1.0.0/
+    local/             # RunRecords for unpublished local changes
+      skill/
+        my-skill/
+          <content-hash>/  # Keyed by content hash of current local version
+  trajectories/        # Raw hook event logs
+    <session_id>.jsonl # One JSON line per hook event, tagged with call stack
+  manifests/           # Deduplicated manifest snapshots
+    <content_hash>.json # Resource name → version mapping
+  frontmatter/         # Inferred frontmatter for resources without explicit declarations
+    skill/
+      code-review/
+        1.2.0.json     # Auto-inferred purpose, tools, constraints
   cache/               # Temporary cache
-  logs/                # Server logs
+  logs/                # Daemon logs
 ```
 
 ### Database Schema (SQLite)
@@ -391,7 +467,106 @@ CREATE TABLE versions (
 
 ```
 
-The server does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
+The daemon does not track projects or installations. Project management is handled entirely by the CLI via `relava.toml`.
+
+### Layer 2 Database Tables (Scoring)
+
+```sql
+-- RunRecords: one per resource per session
+CREATE TABLE run_records (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL,
+  parent_id             TEXT,          -- RunRecord ID of calling agent (null for top-level)
+  call_depth            INTEGER NOT NULL DEFAULT 0,
+
+  -- Deterministic scores (always computed, free)
+  tool_compliance       REAL,          -- 0.0–1.0
+  skill_compliance      REAL,          -- 0.0–1.0 (agents only, null for skills)
+  delegation_compliance REAL,          -- 0.0–1.0 (agents only, null for skills)
+  error_recovery_rate   REAL,          -- 0.0–1.0 (null if no errors)
+
+  -- LLM-evaluated scores (opt-in, null if disabled)
+  purpose_alignment     REAL,          -- 0.0–1.0
+  instruction_alignment REAL,          -- 0.0–1.0
+  delegation_quality    REAL,          -- 0.0–1.0 (agents only, null for skills)
+
+  -- Metadata
+  completion            TEXT NOT NULL,  -- 'completed' | 'partial' | 'abandoned'
+  data_complete         BOOLEAN NOT NULL DEFAULT TRUE,
+  tool_calls            INTEGER,
+  errors                INTEGER,
+  recoveries            INTEGER,
+  wall_time_ms          INTEGER,
+  timestamp             TIMESTAMP NOT NULL,
+
+  -- Identity
+  resource_type         TEXT NOT NULL,  -- 'skill' | 'agent'
+  resource_name         TEXT NOT NULL,
+  resource_version      TEXT,
+  project_dir           TEXT,
+  is_local              BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- Manifest snapshot reference
+  manifest_hash         TEXT,           -- content hash of installed resource versions
+
+  -- Trajectory reference
+  trajectory_id         TEXT            -- pointer to raw event log (= session_id)
+);
+
+CREATE INDEX idx_run_records_session ON run_records(session_id);
+CREATE INDEX idx_run_records_resource ON run_records(resource_type, resource_name, resource_version);
+
+-- Violations: structured record of every compliance failure
+CREATE TABLE violations (
+  id                INTEGER PRIMARY KEY,
+  run_record_id     TEXT NOT NULL REFERENCES run_records(id),
+  type              TEXT NOT NULL,  -- 'tool' | 'skill' | 'delegation' | 'purpose' | 'instruction' | 'recovery_failure'
+  severity          TEXT NOT NULL,  -- 'hard' (deterministic) | 'soft' (LLM-evaluated)
+  what_happened     TEXT NOT NULL,
+  context           TEXT,
+  declared          TEXT,           -- what the frontmatter declares
+  actual            TEXT,           -- what the agent actually did
+  trajectory_offset INTEGER,       -- line number in trajectory file
+  timestamp         TIMESTAMP
+);
+
+CREATE INDEX idx_violations_run ON violations(run_record_id);
+
+-- ImplicationRecords: LLM judge root-cause analysis linking failures to skills/agents
+CREATE TABLE implication_records (
+  record_id         TEXT PRIMARY KEY,
+  run_record_id     TEXT NOT NULL REFERENCES run_records(id),
+  agent_name        TEXT NOT NULL,
+  agent_version     TEXT,
+  skill_name        TEXT,           -- implicated skill (null for AGENT/ENVIRONMENT types)
+  skill_version     TEXT,
+  implication_type  TEXT NOT NULL,  -- 'SKILL' | 'AGENT' | 'MIXED' | 'ENVIRONMENT'
+  severity          TEXT NOT NULL,  -- 'primary' | 'contributing'
+  category          TEXT NOT NULL,  -- 'instruction_gap' | 'missing_edge_case' | 'conflicting_guidance'
+                                    -- | 'over_permissive' | 'under_specified' | 'ambiguous_instruction'
+                                    -- | 'stale_reference'
+  summary           TEXT NOT NULL,  -- LLM judge's explanation
+  confidence        REAL,           -- 0.0–1.0
+  timestamp         TIMESTAMP NOT NULL
+);
+
+CREATE INDEX idx_implications_run ON implication_records(run_record_id);
+CREATE INDEX idx_implications_skill ON implication_records(skill_name, skill_version);
+
+-- Inferred frontmatter: auto-generated contracts for resources without explicit declarations
+CREATE TABLE inferred_frontmatter (
+  id                INTEGER PRIMARY KEY,
+  resource_type     TEXT NOT NULL,
+  resource_name     TEXT NOT NULL,
+  resource_version  TEXT,
+  content_hash      TEXT NOT NULL,  -- hash of resource content that was analyzed
+  purpose           TEXT,           -- inferred purpose statement
+  expected_tools    TEXT,           -- JSON list of expected tools
+  constraints       TEXT,           -- JSON list of behavioral constraints
+  inferred_at       TIMESTAMP NOT NULL,
+  UNIQUE(resource_type, resource_name, content_hash)
+);
+```
 
 ### Future: Enterprise Scoping & Permissions
 
@@ -619,6 +794,20 @@ Base URL: `http://localhost:7420/api/v1`
 | `GET` | `/config` | Server configuration (host, port, data directory, cache directory, cache size) |
 | `POST` | `/cache/clean` | Clean server-side cache, returns bytes freed |
 
+#### Hook Events (Layer 2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/hooks/event` | Receive a hook event from Claude Code (RelavaEvent). Processed asynchronously — daemon returns 200 immediately. |
+
+#### Scoring (Layer 2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/scores/:type/:name` | Get score history for a resource. Query: `?version=1.2.0&limit=50` |
+| `GET` | `/scores` | Aggregate scores across all resources in a project. Query: `?project_dir=/path` |
+| `GET` | `/compare/:type/:name` | Compare two versions. Query: `?v1=1.2.0&v2=1.3.0` |
+
 #### GUI
 
 | Method | Path | Description |
@@ -653,16 +842,21 @@ relava [--server URL] [--project PATH] [--verbose] [--json] [--no-update-check] 
 
 #### `relava init`
 
-Initialize current directory as a Relava-managed project.
+Initialize current directory as a Relava-managed project. Sets up resource management and scoring infrastructure.
 
 ```bash
 $ cd ~/projects/my-app
 $ relava init
 Created relava.toml
+Starting daemon... ok (http://localhost:7420)
+Installing hooks... ok (6 hooks in .claude/settings.json)
+Ready. Your next Claude Code session will be scored by Relava.
 ```
 
 What it does:
 - Creates an empty `relava.toml` in project root
+- Starts the daemon if not already running (`relava daemon start`)
+- Installs Claude Code hooks (`relava hooks install`) — configures `SubagentStart`, `SubagentStop`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` hooks to POST to daemon
 
 #### `relava install <resource-type> <resource-name> [options]`
 
@@ -859,7 +1053,152 @@ Both client-side (CLI) and server-side validation are enforced:
 | Dependency existence (all deps must exist in registry) | No | Yes |
 | SHA-256 per file | Yes | Yes |
 
+#### `relava daemon start [--port PORT]`
+
+Start the Relava daemon (background process). The daemon serves both the registry REST API and hook event endpoints.
+
+```bash
+$ relava daemon start
+Relava daemon started on http://localhost:7420
+GUI available at http://localhost:7420
+
+$ relava daemon stop
+Relava daemon stopped.
+
+$ relava daemon status
+Relava daemon is running on http://localhost:7420
+  Resources: 12 published, 6 installed in current project
+  Active sessions: 1
+```
+
+**Note:** `relava server start/stop/status` are retained as aliases for backward compatibility.
+
+#### `relava hooks install`
+
+Configure Claude Code hooks to POST events to the Relava daemon. Writes hook entries to `.claude/settings.json`.
+
+```bash
+$ relava hooks install
+Installing hooks in .claude/settings.json...
+  [hook] SubagentStart  → POST http://localhost:7420/api/v1/hooks/event (async)
+  [hook] SubagentStop   → POST http://localhost:7420/api/v1/hooks/event (async)
+  [hook] PreToolUse     → POST http://localhost:7420/api/v1/hooks/event (async)
+  [hook] PostToolUse    → POST http://localhost:7420/api/v1/hooks/event (async)
+  [hook] Stop           → POST http://localhost:7420/api/v1/hooks/event (async)
+Hooks installed. Claude Code sessions will now be scored by Relava.
+```
+
+All hooks use `async: true` — they observe but never block Claude Code execution.
+
+#### `relava scores`
+
+Show aggregate compliance scores across all resources in the current project.
+
+```bash
+$ relava scores
+Project: /Users/woong/projects/my-app
+
+Resource                   Version  Runs  Tool   Skill  Deleg  Recovery
+skill/code-review          1.2.0    47    0.94   —      —      0.71
+agent/orchestrator         1.0.0    31    0.97   0.95   0.98   0.82
+agent/coder                0.5.0    31    0.91   1.00   1.00   0.65
+```
+
+#### `relava info <type> <name> --scores`
+
+Show score history for a specific resource version.
+
+```bash
+$ relava info skill code-review --scores
+Name:        code-review
+Type:        skill
+Version:     1.2.0 (latest)
+Runs:        47
+
+Scores (n=47):
+  tool_compliance:    0.94 ± 0.08
+  error_recovery:     0.71 ± 0.15
+
+Recent Violations:
+  2026-03-28  tool: Used Edit (not in declared tools [Read, Grep])
+  2026-03-25  tool: Used Write (not in declared tools [Read, Grep])
+```
+
+#### `relava compare <type> <name> <version-a> <version-b>`
+
+Compare two versions of a resource — content diff plus score comparison.
+
+```bash
+$ relava compare skill code-review 1.2.0 1.3.0
+Content Diff:
+  SKILL.md: +12 -3 lines
+
+Agent Score Correlation:
+┌─ agent/code-reviewer (47 runs v1.2.0, 31 runs v1.3.0) ──────────────┐
+│  Metric              v1.2.0 (n=47)      v1.3.0 (n=31)    Δ          │
+│  tool_compliance     0.94 ± 0.08        0.97 ± 0.04      +0.03 ↑    │
+│  error_recovery      0.71 ± 0.15        0.82 ± 0.11      +0.11 ↑    │
+└──────────────────────────────────────────────────────────────────────┘
+
+Implication Summary:
+  v1.2.0: 6 implications across 69 runs (8.7% implication rate)
+  v1.3.0: 1 implication across 39 runs (2.6% implication rate)
+```
+
+**Skill comparison:** Skills are instructions, not actors — they have no direct scores. Skill quality is derived from the agents that use them. `relava compare skill` shows per-agent stratified score correlations. Scores are NEVER blended across agents to prevent Simpson's paradox.
+
+**Agent comparison:** Shows the agent's own scores plus confounder detection — if a dependency also changed versions during the observation window, a warning is displayed.
+
+**Minimum data requirements:** 5+ runs per version to show data. 20+ runs recommended.
+
+#### `relava auto-update [--dry-run] [--status]`
+
+Check all installed resources and update any with better-scoring versions available.
+
+```bash
+$ relava auto-update --status
+Resource                   Current  Available  Score Δ      Status
+skill/code-review          1.2.0    1.3.0      +0.03 ↑      Update available
+agent/orchestrator         1.0.0    —          —            Up to date
+
+$ relava auto-update
+Checking 4 resources...
+  skill/code-review: 1.2.0 → 1.3.0 (better scores, n=31)
+Updated 1 resource.
+
+$ relava auto-update --dry-run
+Would update:
+  skill/code-review: 1.2.0 → 1.3.0 (tool_compliance: +0.03, error_recovery: +0.11)
+```
+
+**Safeguards:**
+- Only updates to published registry versions
+- Requires minimum sample size (default: 5 runs)
+- `require_no_regression = true` means the new version must score equal or better on *every* deterministic metric
+- Updates are logged with before/after versions and scores
+- `relava.lock` is updated to reflect new versions
+- Pin a version in `relava.toml` (e.g., `code-review = "1.2.0"`) to opt out of auto-update
+
+#### `relava frontmatter show|edit <type> <name>`
+
+View or edit the inferred frontmatter contract for a resource.
+
+```bash
+$ relava frontmatter show skill code-review
+Inferred frontmatter for skill/code-review@1.2.0:
+  Purpose:   Comprehensive code review with security and style checks
+  Tools:     [Read, Grep]
+  Constraints:
+    - Do not modify source files
+    - Focus on security vulnerabilities and style issues
+
+$ relava frontmatter edit skill code-review
+# Opens editor with inferred frontmatter for manual adjustment
+```
+
 #### `relava server start [--port PORT] [--daemon]`
+
+Retained as alias for `relava daemon start` for backward compatibility.
 
 ```bash
 $ relava server start --daemon
@@ -872,7 +1211,6 @@ Relava server stopped.
 $ relava server status
 Relava server is running on http://localhost:7420
   Resources: 12 published, 6 installed in current project
-  Projects: 2 registered
 ```
 
 #### `relava doctor`
@@ -1320,7 +1658,221 @@ When publishing a new or modified resource to the registry and the name already 
 
 ---
 
-## 10. Implementation Plan
+## 10. Layer 2: Runtime Scoring
+
+Relava does not replace Claude Code's execution loop. It **observes** it via hooks and scores each skill and agent run using a three-tier evaluation model:
+
+- **Deterministic (free, always on):** tool compliance, skill compliance, delegation compliance, error recovery — checked against frontmatter declarations
+- **LLM-as-judge (opt-in, costs tokens):** purpose alignment, instruction alignment, delegation quality — semantic evaluation after session completes
+- **Human review (async):** ambiguous cases and high-risk mutation promotions
+
+Each resource in a session is scored independently. When an orchestrator delegates to a coder which invokes a skill, the session produces one `RunRecord` per resource, linked by `parent_id` into a call tree. This means when an agent's scores drop, you can see whether the problem is the agent itself or a dependency.
+
+### 10.1 Frontmatter Inference
+
+Users should never need to write frontmatter manually. On the first hook event that observes a resource without inferred frontmatter, Relava queues it for LLM-based inference. After the session completes, the daemon auto-generates:
+
+- **Purpose statement** — what the resource is designed to do
+- **Expected tools** — which tools the resource should use
+- **Constraints** — behavioral boundaries inferred from the resource content
+
+**Timing:** Inference runs on first hook observation only. Install and publish work fully offline — no LLM required. Resources without inferred frontmatter produce N/A compliance scores (not 0.0) until inference completes.
+
+**How inference is triggered:** The daemon detects a resource without inferred frontmatter during hook processing. It queues the resource for inference. After the session completes (on `Stop` event), the daemon calls the LLM API directly using the user's configured API key (`RELAVA_API_KEY` env var or `api_key` in `~/.relava/config.toml`) to generate frontmatter from the resource content. No injection into the active Claude session occurs; the daemon makes its own API calls post-session.
+
+**Re-inference:** When a resource's content changes (new version installed, content hash changes on local edit), frontmatter is re-inferred on the next hook event.
+
+**Conservative by default:** Inference declares the **minimum** tool set, constraints, and dependencies — not the maximum. Better to produce false positives (user corrects via `relava frontmatter edit`) than to miss real violations.
+
+**Publish behavior:** When a user runs `relava publish`, the inferred frontmatter is embedded into the published resource as explicit frontmatter. This makes the scoring contract portable — all users who install this version score against the same contract. `relava publish --dry-run` shows the embedded frontmatter.
+
+### 10.2 Deterministic Scores (Always Computed, Free)
+
+These are checkable by comparing hook events against frontmatter declarations (either author-written or auto-inferred). No judgment required.
+
+**Tool compliance (0.0–1.0)** — did the resource only use tools declared in its `tools` frontmatter field? Each undeclared tool use reduces the score.
+
+**Skill compliance (0.0–1.0, agents only)** — did the agent only activate skills declared in `metadata.relava.skills`?
+
+**Delegation compliance (0.0–1.0, agents only)** — did the agent only delegate to sub-agents declared in `metadata.relava.agents`?
+
+**Error recovery rate (0.0–1.0, null if no errors)** — when a tool call fails (signaled by a `PostToolUseFailure` event), does the next action address the error? Error followed by corrective action = recovery. Error followed by same failing action or session abandonment = failure.
+
+| Resource type | Tool compliance | Skill compliance | Delegation compliance | Error recovery |
+|--------------|----------------|-----------------|----------------------|----------------|
+| Skill | Yes | No | No | Yes |
+| Agent | Yes | Yes | Yes | Yes |
+
+### 10.3 LLM-Evaluated Scores (Opt-In, Costs Tokens)
+
+Enabled per project: `[scoring] llm_eval = true` in `relava.toml`.
+
+**Purpose alignment (0.0–1.0)** — did the resource's actions align with its declared `description`?
+
+**Instruction alignment (0.0–1.0)** — did the resource follow the intent of its constraints, not just the letter?
+
+**Delegation quality (0.0–1.0, agents only)** — was the right sub-agent chosen for the task? Were the instructions appropriate?
+
+LLM evaluation runs after the session completes. The scoring engine sends specific actions to an LLM with a structured prompt including the resource's frontmatter and the relevant trajectory segment. LLM scores are stored separately from deterministic scores with lower confidence weight.
+
+### 10.4 RunRecord Schema
+
+See §4 Layer 2 Database Tables for the full `run_records` table schema.
+
+**One RunRecord per resource per session.** When an orchestrator delegates to a coder which invokes a skill, the session produces three RunRecords:
+
+```
+Session: abc-123
+  RunRecord: agent/orchestrator@1.0.0  (parent: null,         depth: 0)
+  RunRecord: agent/coder@0.5.0        (parent: orchestrator,  depth: 1)
+  RunRecord: skill/code-review@1.2.0  (parent: coder,         depth: 2)
+```
+
+Each resource is scored against its own frontmatter. The call tree is reconstructable from `parent_id` links at any depth.
+
+**Violation schema:** See §4 Layer 2 Database Tables for the full `violations` table. Violations are the **actionable context** — aggregate scores tell you *that* a version is worse, violations tell you *what* went wrong, *how*, and *where* in the trajectory.
+
+**Manifest hash:** Each RunRecord captures a `manifest_hash` — a content hash of a manifest snapshot stored in `~/.relava/manifests/<hash>.json`. This records which resource versions were installed during each run, enabling confounder detection during version comparison.
+
+### 10.5 Skill Quality Derivation
+
+Skills are injected instructions with no discrete lifecycle — they cannot be scored directly. Skill quality is derived from the agents that use them.
+
+**Agent evaluation is primary.** Score agents on compliance and output quality. Agent scores are the ground truth.
+
+**When agent scores drop, diagnose root cause.** The LLM judge receives the agent's definition, all active skill definitions, and the full trajectory, then produces `ImplicationRecord`s (see §4 Layer 2 Database Tables).
+
+**ImplicationRecord fields:**
+- `implication_type`: `SKILL` | `AGENT` | `MIXED` | `ENVIRONMENT`
+- `severity`: `primary` | `contributing`
+- `category`: `instruction_gap` | `missing_edge_case` | `conflicting_guidance` | `over_permissive` | `under_specified` | `ambiguous_instruction` | `stale_reference`
+- `summary`: LLM judge's explanation
+- `confidence`: 0.0–1.0
+
+`relava compare skill` shows `SKILL` and `MIXED` implications. `relava compare agent` shows `AGENT` and `MIXED` implications. This prevents double-counting while ensuring `MIXED` cases are visible in both views.
+
+**Correlation analysis (cheap screening):** Compare agent scores when skill X is installed at version A vs version B. Uses data already being collected via `manifest_hash`. When correlation suggests a skill version change affected scores, the LLM judge provides the causal diagnosis.
+
+### 10.6 Call Tree Tracking
+
+Claude Code provides native **`SubagentStart`** and **`SubagentStop`** hook events that give a clean push/pop lifecycle for agent attribution.
+
+When a `SubagentStart` event fires, the new agent is pushed onto the call stack. When `SubagentStop` fires, it's popped. Every hook event between a start/stop pair is attributed to that agent.
+
+```json
+{"ts": "...", "stack": ["orchestrator"], "event": "SubagentStart", "agent": "coder"}
+{"ts": "...", "stack": ["orchestrator", "coder"], "event": "PreToolUse", "tool": "Edit"}
+{"ts": "...", "stack": ["orchestrator", "coder"], "event": "PostToolUse", "tool": "Edit"}
+{"ts": "...", "stack": ["orchestrator", "coder"], "event": "SubagentStart", "agent": "test-runner"}
+{"ts": "...", "stack": ["orchestrator", "coder", "test-runner"], "event": "PreToolUse", "tool": "Bash"}
+{"ts": "...", "stack": ["orchestrator", "coder", "test-runner"], "event": "PostToolUseFailure", "tool": "Bash"}
+{"ts": "...", "stack": ["orchestrator", "coder", "test-runner"], "event": "SubagentStop", "agent": "test-runner"}
+{"ts": "...", "stack": ["orchestrator", "coder"], "event": "SubagentStop", "agent": "coder"}
+{"ts": "...", "stack": ["orchestrator"], "event": "Stop", "completion": "completed"}
+```
+
+The call stack enables:
+- Attributing each action to the correct resource for scoring
+- Building the `parent_id` tree in `RunRecord`s
+- Detecting compliance violations at any depth
+- Tracking error recovery within each resource's scope
+
+### 10.7 Trajectory Storage
+
+One trajectory file per session (not per resource). All resources in the session share the same trajectory. Stored at `~/.relava/trajectories/<session_id>.jsonl`. Referenced by `trajectory_id` (= `session_id`) from each `RunRecord`. Old trajectories can be cleaned up via `relava cache clean` — scores persist independently. Trajectories are stored locally and never sent externally.
+
+### 10.8 Hook Infrastructure
+
+Hooks observe Claude Code's execution. They do not replace it.
+
+**Hook handler type:** All hooks use the **HTTP handler type** (not command type). Each hook event is POSTed to the Relava daemon's HTTP endpoint.
+
+**Async execution:** All observation hooks use **`async: true`** configuration. Hooks observe but never block Claude Code execution. Claude Code does not wait for Relava's response before continuing.
+
+**Hook configuration** (installed by `relava init` or `relava hooks install`):
+
+| Hook Event | What it captures |
+|------------|-----------------|
+| `SubagentStart` | Agent name, agent type. Pushes agent onto call stack. Loads agent's frontmatter for compliance checking. |
+| `SubagentStop` | Agent completion status. Pops agent from call stack. Finalizes that agent's RunRecord. |
+| `PreToolUse` | Tool name, inputs. Checked against current stack-top resource's declared tools/skills/agents. |
+| `PostToolUse` | Tool result (success), file paths. Used for trajectory recording and compliance tracking. |
+| `PostToolUseFailure` | Tool failure: error message, exit codes. Distinct from PostToolUse — provides a clean signal for error detection and recovery tracking. |
+| `Stop` | Session end. Finalize all remaining RunRecords, compute scores, close trajectory. |
+
+**Processing flow:**
+
+1. On session start (first hook event received), daemon initializes call stack and trajectory log
+2. On `SubagentStart`: push agent onto stack, load its frontmatter, begin tracking its actions
+3. On each `PreToolUse`: append to trajectory with current stack. Check tool against current stack-top resource's declared tools
+4. On each `PostToolUse`: append to trajectory. Record successful tool completion
+5. On each `PostToolUseFailure`: append to trajectory. Flag error for recovery tracking
+6. On `SubagentStop`: pop agent from stack. Compute that agent's deterministic scores
+7. On `Stop`: finalize any remaining RunRecords. Optionally trigger LLM evaluation. Write `RunRecord` per resource
+
+**What hooks do NOT do:**
+- They do not block tool calls (async observation only, not enforcement)
+- They do not modify agent behavior during a run
+- They do not send data anywhere without explicit opt-in
+
+### 10.9 Vendor-Neutral Event Schema (RelavaEvent)
+
+All hook events from any supported platform are normalized into a canonical **RelavaEvent** schema before any processing occurs. The scoring engine, trajectory storage, ImplicationRecord analysis, and all downstream systems only see RelavaEvent — they are platform-agnostic.
+
+**The vendor adapter pattern:**
+```
+Claude Code hooks  →  Claude Code Adapter  →  RelavaEvent
+Codex hooks        →  Codex Adapter        →  RelavaEvent  (Phase D)
+Gemini CLI hooks   →  Gemini Adapter       →  RelavaEvent  (Phase D)
+                                                  │
+                                                  v
+                                     Scoring Engine / Trajectory Storage
+                                     (platform-agnostic — sees only RelavaEvent)
+```
+
+**RelavaEvent schema:**
+
+```
+RelavaEvent
+  event_type          TEXT        -- SUBAGENT_START | SUBAGENT_STOP
+                                  -- | PRE_TOOL_USE | POST_TOOL_USE | POST_TOOL_USE_FAILURE
+                                  -- | SESSION_STOP
+  timestamp           TIMESTAMP
+  session_id          TEXT
+  agent_platform      TEXT        -- "claude" | "codex" | "gemini"
+  tool_name           TEXT        -- normalized tool name (null for agent lifecycle events)
+  tool_inputs         MAP         -- sanitized tool inputs (no secrets, no file contents)
+  tool_result_summary TEXT        -- brief result summary (not raw output)
+  agent_name          TEXT        -- current agent (from call stack top)
+  call_stack          LIST<TEXT>  -- current agent call stack
+  error               BOOL       -- whether this event represents a failure
+  extras              MAP         -- platform-specific metadata
+```
+
+**Phase B ships with the Claude Code adapter only.** The adapter maps Claude Code hook events to canonical RelavaEvent types:
+- `SubagentStart` → `SUBAGENT_START`
+- `SubagentStop` → `SUBAGENT_STOP`
+- `PreToolUse` → `PRE_TOOL_USE`
+- `PostToolUse` → `POST_TOOL_USE`
+- `PostToolUseFailure` → `POST_TOOL_USE_FAILURE`
+- `Stop` → `SESSION_STOP`
+
+**Design constraint:** No downstream system (scoring engine, trajectory writer, RunRecord builder, ImplicationRecord analyzer) may reference platform-specific event types or payload fields. All platform knowledge is encapsulated in adapters.
+
+### 10.10 Score-Driven Auto-Update
+
+When a newer version of a resource is available in the registry and has better scores than the currently installed version, Relava can automatically update it.
+
+**How it works:**
+1. After each scoring session, check: are there newer versions of the scored resource in the registry?
+2. If yes, compare the current version's aggregate scores against the newer version's scores
+3. If the newer version scores equal or better on all deterministic scores with sufficient sample size (default: 5+ runs), auto-update
+
+**Relationship to version pinning:** Users can pin a version in `relava.toml` to opt out of auto-update for specific resources. `relava.lock` is updated to reflect new versions after auto-update.
+
+---
+
+## 11. Implementation Plan
 
 ### Phase 1: Core CLI + Resource Format + Local Storage (Weeks 1-3)
 
@@ -1359,17 +1911,37 @@ When publishing a new or modified resource to the registry and the name already 
 
 ### Phase 4: Advanced Features (Weeks 9+)
 
-- Hook installation and management
 - Resource templates (`relava create skill`, `relava create agent`)
 - Project scaffolding (`relava new project`)
-- Auto-update notifications
 - CLAUDE.md auto-management (adding/removing skill references)
 - Version conflict resolution
-- Cache management and cleanup
+
+### Phase B: Runtime Scoring (4 weeks)
+
+**Prerequisite:** Phases 1–3 complete (resource management, registry server, GUI).
+
+**Cold start:** Relava must ship with a curated set of 10-20 default skills covering common Claude Code workflows (code review, commit messages, PR descriptions, debugging, test writing, refactoring, documentation, etc.). These are seeded in the registry with pre-authored frontmatter and serve as the initial score surface.
+
+**Day-1 experience:** `relava init` installs hooks + a starter skill. The user's next Claude Code session is scored, and at session end Relava prints a one-line summary: `skill/code-review — tool compliance: 1.0, error recovery: 0.8 (2 errors, 1 recovered)`.
+
+| Week | Deliverable |
+|------|-------------|
+| 1 | Hook infrastructure — `relava hooks install` configures Claude Code hooks (HTTP handler type, async:true). Daemon architecture (`relava daemon start/stop`). Call stack tracking via `SubagentStart`/`SubagentStop` events. `PreToolUse`/`PostToolUse`/`PostToolUseFailure` events normalized to RelavaEvent and written to `~/.relava/trajectories/`. Claude Code adapter (RelavaEvent normalization). Frontmatter loading for declared tools/skills/agents/constraints. |
+| 2 | Deterministic scoring engine — tool compliance, skill compliance (agents), delegation compliance (agents), error recovery rate. `RunRecord` schema with `session_id`, `parent_id`, `call_depth`. One `RunRecord` per resource per session. Local storage for scores and trajectories. |
+| 3 | Score CLI + auto-update — `relava info <type> <name> --scores` (score history per version), `relava scores` (aggregate across project), `relava compare <type> <name> <v1> <v2>` (content diff + score comparison). `relava auto-update` (score-driven version selection with `--dry-run` and `--status`). Local change tracking by content hash. Score migration on `relava publish`. Inferred frontmatter embedded on publish. |
+| 4 | LLM infrastructure — frontmatter inference engine (auto-generation of purpose, expected tools, constraints from resource content, triggered post-session via daemon's own API calls) + LLM evaluation (opt-in) — purpose alignment, instruction alignment, delegation quality scorers. Post-session async evaluation. `[scoring] llm_eval = true` config. LLM scores stored separately with lower confidence weight. |
+
+**Milestone:** User installs a skill or agent, Relava auto-infers its frontmatter contract on first use, hooks produce compliance scores on every run, resources auto-update to better-scoring versions, and the scoring data is accurate enough to feed failure clustering.
+
+**Phase B Gate Criteria (must pass before Phase C):**
+1. **Frontmatter inference accuracy:** >85% agreement with human-reviewed frontmatter on N=50 resources
+2. **Deterministic score false-positive rate:** <10% of violations are actually legitimate behavior
+3. **Violation log usefulness:** >70% of violations contain enough context for a human to understand what went wrong
+4. **Trajectory completeness:** call stack correctly attributes >95% of actions to the right resource
 
 ---
 
-## 11. Tech Stack Recommendations
+## 12. Tech Stack Recommendations
 
 ### CLI + Server: Rust
 
@@ -1433,7 +2005,7 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 ---
 
-## 12. Open Questions
+## 13. Open Questions
 
 ### Must Resolve Before Phase 1
 
@@ -1463,9 +2035,9 @@ The GUI is React because it's the most practical choice for a small web applicat
 
 ---
 
-## 13. Implementation Order
+## 14. Implementation Order
 
-Trackable checklist of every deliverable from the Implementation Plan (Section 8). Items are numbered sequentially across all phases. Status key: ⬜ Not Started · 🟡 In Progress · ✅ Complete.
+Trackable checklist of every deliverable from the Implementation Plan (Section 11). Items are numbered sequentially across all phases. Status key: ⬜ Not Started · 🟡 In Progress · ✅ Complete.
 
 ### Phase 1: Core CLI + Resource Format + Local Storage
 
@@ -1574,12 +2146,55 @@ Trackable checklist of every deliverable from the Implementation Plan (Section 8
 
 No week assignments — each feature is an independent work item.
 
-- ⬜ 52. Hook installation — read `settings.json`, merge hook definitions into event arrays (PreToolUse, PostToolUse, etc.)
-- ⬜ 53. Hook removal — remove specific hook entries from `settings.json`
 - ⬜ 54. Resource templates — `relava create skill <name>`, `relava create agent <name>` scaffolding with starter `.md` files and frontmatter
 - ✅ 56. Auto-update notifications — CLI check (throttled once/hour, batch POST to server), GUI UpdateBanner component with amber badge. Suppressed by `--no-update-check` and `--json` flags
 - ✅ 58. Self-update check at startup — blocking interactive prompt at program startup (throttled once/24h), checks GitHub Releases API, SHA-256 verified atomic binary replacement for both `relava` and `relava-server`. Suppressed by `--no-update-check`, `--json`, or non-TTY
 - ✅ 59. Cache management — `relava cache clean [--older-than DURATION]` and `relava cache status` commands, LRU eviction policy, disk usage reporting with entry counts, duration parsing (e.g., `7d`, `24h`, `30m`)
+
+---
+
+### Phase B: Runtime Scoring
+
+#### Week B1 — Hook Infrastructure & Call Tree
+
+- ⬜ 65. Daemon lifecycle — `relava daemon start/stop/status` commands, background process management with PID file, alias `relava server` commands for backward compatibility — *depends on 26*
+- ⬜ 66. Hook installation — `relava hooks install` writes hook entries to `.claude/settings.json` (SubagentStart, SubagentStop, PreToolUse, PostToolUse, PostToolUseFailure, Stop), all using HTTP handler type with `async: true`, POST to `localhost:7420/api/v1/hooks/event`
+- ⬜ 67. Hook removal — `relava hooks remove` removes Relava hook entries from `.claude/settings.json`
+- ⬜ 68. Hook event endpoint — `POST /api/v1/hooks/event` receives raw Claude Code hook events, returns 200 immediately (async processing)
+- ⬜ 69. RelavaEvent schema — canonical event types (`SUBAGENT_START`, `SUBAGENT_STOP`, `PRE_TOOL_USE`, `POST_TOOL_USE`, `POST_TOOL_USE_FAILURE`, `SESSION_STOP`) in `relava-types` crate
+- ⬜ 70. Claude Code adapter — normalize Claude Code hook payloads into RelavaEvent. All platform knowledge encapsulated here — no downstream system references Claude-specific types
+- ⬜ 71. Call stack tracking — in-memory call stack maintained by daemon. Push on `SUBAGENT_START`, pop on `SUBAGENT_STOP`. Every event between start/stop attributed to stack-top agent
+- ⬜ 72. Trajectory writer — write RelavaEvent stream to `~/.relava/trajectories/<session_id>.jsonl`, one JSON line per event with call stack annotation
+- ⬜ 73. Frontmatter loading — on `SUBAGENT_START`, load agent's frontmatter from installed resources. Resolve declared tools/skills/agents/constraints for compliance checking
+- ⬜ 74. `relava init` expansion — add daemon start and hooks install to `relava init` flow. Print scoring-ready confirmation message — *depends on 65, 66*
+
+#### Week B2 — Deterministic Scoring Engine
+
+- ⬜ 75. RunRecord schema — `run_records` table in SQLite (see §4 Layer 2 Database Tables). One RunRecord per resource per session, linked by `session_id` and `parent_id` into call tree
+- ⬜ 76. Violation schema — `violations` table in SQLite. Structured record of every compliance failure with type, severity, context, declared vs actual, trajectory offset
+- ⬜ 77. Tool compliance scorer — compare each `PRE_TOOL_USE` event's tool name against stack-top resource's declared tools. Score = (declared tool uses) / (total tool uses). Each undeclared use produces a Violation
+- ⬜ 78. Skill compliance scorer (agents only) — check whether activated skills match declared `metadata.relava.skills`. Score = (declared skills) / (total skills activated)
+- ⬜ 79. Delegation compliance scorer (agents only) — check whether delegated agents match declared `metadata.relava.agents`. Score = (declared agents) / (total agents delegated to)
+- ⬜ 80. Error recovery scorer — on `POST_TOOL_USE_FAILURE`, check if next action by same resource addresses the error. Recovery = corrective action follows. Failure = same failing action repeated or session abandoned. Score = (recoveries) / (total errors)
+- ⬜ 81. RunRecord finalization — on `SUBAGENT_STOP` or `SESSION_STOP`, compute deterministic scores for each resource from attributed trajectory events, write RunRecord to `~/.relava/scores/` and SQLite
+- ⬜ 82. Manifest snapshot — on session start, capture installed resource versions as `~/.relava/manifests/<content_hash>.json`. Deduplicated across consecutive runs with identical versions. Store `manifest_hash` in RunRecord
+- ⬜ 83. Daemon crash recovery — write `daemon.state` (session_id, last event timestamp) to disk periodically. On restart, detect incomplete sessions and mark RunRecords with `data_complete = false`
+
+#### Week B3 — Score CLI & Auto-Update
+
+- ⬜ 84. `relava scores` CLI — aggregate scores across all resources in project. Query daemon API, display formatted table with resource, version, run count, and score columns — *depends on 75*
+- ⬜ 85. `relava info --scores` — extend existing `relava info` to show score history per version when `--scores` flag is set. Show recent violations — *depends on 75, 76*
+- ⬜ 86. `relava compare` CLI — `relava compare <type> <name> <v1> <v2>`. Content diff (SKILL.md / agent .md diff between versions) + score comparison. For skills: per-agent stratified score correlations (auto-discover dependent agents from RunRecords). For agents: own scores + confounder detection (warn if dependencies also changed versions). Minimum data thresholds (5+ runs to show, 20+ recommended) — *depends on 75, 82*
+- ⬜ 87. `relava auto-update` CLI — check all installed resources for better-scoring versions in registry. `--dry-run` shows what would change. `--status` shows available updates with score deltas. Respects `[auto_update]` config in `relava.toml` (enabled, min_runs, require_no_regression). Updates `relava.lock` — *depends on 75, 18*
+- ⬜ 88. Local change tracking — track unpublished local edits under `~/.relava/scores/local/<type>/<name>/<content-hash>/`. Content hash computed from resource directory. On `relava publish`, migrate local scores to `~/.relava/scores/registry/` under new version
+- ⬜ 89. Score migration on publish — when `relava publish` creates a new version, embed inferred frontmatter into published resource. Local scores become version-pinned registry scores
+
+#### Week B4 — LLM Infrastructure
+
+- ⬜ 90. Frontmatter inference engine — on first hook observation of a resource without frontmatter, queue for inference. After session completes (`SESSION_STOP`), daemon calls LLM API (using `RELAVA_API_KEY` or `~/.relava/config.toml` api_key) to generate purpose, expected tools, and constraints from resource content. Store in `~/.relava/frontmatter/` and `inferred_frontmatter` table. Conservative by default (minimum tool set). Re-infer on content hash change — *depends on 68, 73*
+- ⬜ 91. `relava frontmatter show|edit` CLI — view inferred frontmatter for a resource. `edit` opens editor for manual adjustment. Explicit frontmatter in resource file takes precedence over inferred
+- ⬜ 92. LLM evaluation engine (opt-in) — purpose alignment, instruction alignment, delegation quality scorers. Enabled by `[scoring] llm_eval = true` in `relava.toml`. Runs post-session. Sends resource frontmatter + trajectory segment to LLM with structured prompt, expects JSON response with scores and reasons. LLM scores stored separately with lower confidence weight
+- ⬜ 93. ImplicationRecord analysis — when agent scores drop and LLM eval is enabled, LLM judge receives agent definition + active skill definitions + trajectory. Produces ImplicationRecords linking failure to specific skills/agents. Schema: implication_type, severity, category, summary, confidence. Stored in `implication_records` table — *depends on 92, 76*
 
 ---
 
