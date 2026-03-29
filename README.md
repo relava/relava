@@ -24,7 +24,6 @@ Relava fixes this. It manages Claude Code prompt-layer artifacts the same way `n
 - **Multi-platform** -- `agent_type` field supports Claude Code (MVP), with Codex and Gemini CLI planned
 - **Registry server** -- local HTTP server with REST API, web GUI for browsing, and SQLite metadata
 - **Non-invasive** -- writes to standard `.claude/` locations; remove Relava and your resources still work
-- **Enterprise-ready architecture** -- REST-first design, storage abstraction traits, future support for SSO, scoping, and registry federation
 
 ## Installation
 
@@ -180,23 +179,21 @@ Project Filesystem (.claude/)
 - **CLI** -- reads `relava.toml`, fetches resources from server, writes files to the project. All project management is local.
 - **GUI** -- React SPA at `localhost:7420` for browsing and searching the registry. Features dashboard with stats, resource browser with search/filter/sort, resource detail with markdown rendering, and settings page with server status and cache management.
 
-The CLI always talks to the server via REST API. Switching from local (`localhost:7420`) to an enterprise registry is just a URL change.
+The CLI always talks to the server via REST API.
 
 ### Crate Structure
 
-The project is organized as a Cargo workspace with four crates:
+The project is organized as a Cargo workspace with three crates:
 
 | Crate | Purpose | License |
 |-------|---------|---------|
 | `relava-types` | Shared types, validation, versioning, manifest parsing, file filtering | Apache-2.0 |
 | `relava-cli` | CLI binary -- all commands (install, remove, update, list, info, search, publish, import, validate, doctor, disable, enable, cache, resolve), registry client, caching, dependency resolution, self-update, environment checks | Apache-2.0 |
 | `relava-server` | Registry server -- REST API, storage (SQLite, blob store), dependency resolver, web GUI serving | ELv2 |
-| `relava-server-ext` | Cloud and enterprise extensions (future) | ELv2 |
 
 ```
 relava-cli        → relava-types
 relava-server     → relava-types
-relava-server-ext → relava-server, relava-types
 ```
 
 ## CLI Commands
@@ -226,22 +223,11 @@ relava-server-ext → relava-server, relava-types
 
 Global options: `--server URL`, `--project PATH`, `--verbose`, `--json`, `--no-update-check`
 
-## Enterprise Extensibility
-
-The MVP is local-first, but the architecture is designed for enterprise:
-
-- **Scoping** -- personal (`@user/name`), team (`@team/name`), and global namespaces with permissions
-- **Auth & SSO** -- API tokens, OIDC, SAML support planned
-- **Registry federation** -- `[registries]` in `relava.toml` for multi-registry resolution
-- **Storage abstraction** -- `ResourceStore`, `BlobStore`, `SearchBackend` traits for swapping SQLite/filesystem to PostgreSQL/S3/vector search
-- **Semantic search** -- hybrid vector + text search via embeddings
-- **Audit logging, webhooks, offline bundles** -- documented in DESIGN.md
-
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| Workspace | Rust (4-crate Cargo workspace) |
+| Workspace | Rust (3-crate Cargo workspace) |
 | CLI | Rust, clap, reqwest, comfy-table, colored |
 | Server | Rust, Axum, SQLite (rusqlite), tokio |
 | GUI | React 19, Vite 8, Tailwind CSS 4, TanStack Query 5, React Router 7 |
@@ -256,4 +242,4 @@ Relava is in active development. Phases 1–3 are complete (CLI, registry server
 Relava uses split licensing:
 
 - **`relava-types` and `relava-cli`** -- [Apache License 2.0](crates/relava-types/LICENSE). Open source, free to use and modify.
-- **`relava-server` and `relava-server-ext`** -- [Elastic License 2.0 (ELv2)](crates/relava-server/LICENSE). Free for personal and commercial use. Cannot be offered as a managed service.
+- **`relava-server`** -- [Elastic License 2.0 (ELv2)](crates/relava-server/LICENSE). Free for personal and commercial use. Cannot be offered as a managed service.
